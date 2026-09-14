@@ -1,0 +1,12 @@
+name = "garmin-daily-report"
+main = "src/worker.ts"
+compatibility_date = "2024-11-01"
+
+# Cron Triggers 使用 UTC：23:30 UTC = 次日 07:30（Asia/Shanghai）
+[triggers]
+crons = ["30 23 * * *"]
+
+# 敏感信息不在本文件声明，使用 `wrangler secret put` 写入：
+#   wrangler secret put GARMIN_USERNAME
+#   wrangler secret put GARMIN_PASSWORD
+#   wrangler secret put SERVERCHAN_SENDKEY

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+*.log
+.DS_Store
+
+# Trae IDE 本地配置（可能含 MCP 凭据）
+.trae/
