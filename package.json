@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx src/index.ts",
+    "token": "tsx scripts/bootstrap-token.ts",
     "typecheck": "tsc --noEmit",
     "worker:dev": "wrangler dev",
     "worker:dry-run": "wrangler deploy --dry-run --outdir dist",

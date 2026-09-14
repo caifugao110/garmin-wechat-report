@@ -109,6 +109,37 @@ export class GarminAuth {
   }
 
   /**
+   * 使用缓存的长效 OAuth1 token 直接换取 OAuth2（跳过 SSO 账号密码登录）
+   *
+   * sso.garmin.com 前置的 Cloudflare 会拦截云机房 IP（如 GitHub Actions），
+   * 而 exchange 接口位于 connectapi.garmin.com，不受影响。
+   * token 通过本机执行 `npm run token` 登录一次获得。
+   */
+  async loginWithOauth1(token: OAuthToken): Promise<GarminOAuth2Token> {
+    if (!token?.key) {
+      throw new GarminAuthError('缺少 OAuth1 token');
+    }
+
+    this.log('[auth] 使用缓存 OAuth1 token 登录（跳过 SSO）');
+    await this.fetchOauthConsumer();
+    this.oauth1 = { key: token.key, secret: token.secret };
+
+    const oauth2 = await this.exchange();
+    this.log('[auth] 登录成功');
+    return oauth2;
+  }
+
+  /**
+   * 取出当前 OAuth1 token（引导脚本用于生成 CI secrets）
+   */
+  getOAuth1Token(): OAuthToken {
+    if (!this.oauth1?.key) {
+      throw new GarminAuthError('尚未通过 SSO 登录，OAuth1 token 不存在');
+    }
+    return { key: this.oauth1.key, secret: this.oauth1.secret };
+  }
+
+  /**
    * 使用已有 OAuth2 令牌（避免每次都走 SSO 登录）
    */
   useToken(token: GarminOAuth2Token): void {

@@ -11,12 +11,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
+
+      - name: Check credentials
+        env:
+          GARMIN_USERNAME: ${{ secrets.GARMIN_USERNAME }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_OAUTH1_TOKEN: ${{ secrets.GARMIN_OAUTH1_TOKEN }}
+        run: |
+          if [ -n "$GARMIN_OAUTH1_TOKEN" ] || { [ -n "$GARMIN_USERNAME" ] && [ -n "$GARMIN_PASSWORD" ]; }; then
+            echo "凭据检查通过"
+          else
+            echo "::error::未配置凭据。请在 Settings → Secrets and variables → Actions 配置 GARMIN_OAUTH1_TOKEN（推荐，本机执行 npm run token 生成），或配置 GARMIN_USERNAME + GARMIN_PASSWORD。详见 README。"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: npm ci
@@ -26,5 +39,7 @@ jobs:
           GARMIN_USERNAME: ${{ secrets.GARMIN_USERNAME }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          GARMIN_OAUTH1_TOKEN: ${{ secrets.GARMIN_OAUTH1_TOKEN }}
+          GARMIN_OAUTH1_TOKEN_SECRET: ${{ secrets.GARMIN_OAUTH1_TOKEN_SECRET }}
           TZ: Asia/Shanghai
         run: npx tsx src/index.ts

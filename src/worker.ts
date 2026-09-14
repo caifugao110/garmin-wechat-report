@@ -10,9 +10,12 @@
 import { runPipeline, type PipelineResult } from './pipeline.js';
 
 interface Env {
-  GARMIN_USERNAME: string;
-  GARMIN_PASSWORD: string;
-  SERVERCHAN_SENDKEY: string;
+  GARMIN_USERNAME?: string;
+  GARMIN_PASSWORD?: string;
+  SERVERCHAN_SENDKEY?: string;
+  /** 可选：长效 OAuth1 token，配置后跳过 SSO 登录 */
+  GARMIN_OAUTH1_TOKEN?: string;
+  GARMIN_OAUTH1_TOKEN_SECRET?: string;
 }
 
 interface ScheduledController {
@@ -26,12 +29,17 @@ interface ExecutionContext {
 }
 
 async function run(env: Env, date?: string): Promise<PipelineResult> {
-  if (!env.GARMIN_USERNAME || !env.GARMIN_PASSWORD) {
-    throw new Error('缺少 GARMIN_USERNAME / GARMIN_PASSWORD secret');
+  const oauth1Token = env.GARMIN_OAUTH1_TOKEN
+    ? { key: env.GARMIN_OAUTH1_TOKEN, secret: env.GARMIN_OAUTH1_TOKEN_SECRET }
+    : undefined;
+
+  if (!oauth1Token && (!env.GARMIN_USERNAME || !env.GARMIN_PASSWORD)) {
+    throw new Error('缺少凭据：请配置 GARMIN_USERNAME/GARMIN_PASSWORD 或 GARMIN_OAUTH1_TOKEN');
   }
   return runPipeline({
-    username: env.GARMIN_USERNAME,
-    password: env.GARMIN_PASSWORD,
+    username: env.GARMIN_USERNAME ?? '',
+    password: env.GARMIN_PASSWORD ?? '',
+    oauth1Token,
     sendKey: env.SERVERCHAN_SENDKEY,
     date,
     log: (msg) => console.log(msg),

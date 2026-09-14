@@ -19,6 +19,11 @@ export interface PipelineConfig {
   password: string;
   /** Server酱 SendKey，缺省则只生成报告不推送 */
   sendKey?: string;
+  /**
+   * 长效 OAuth1 token（本机 `npm run token` 生成）。
+   * 提供时跳过 SSO 账号密码登录，用于 sso.garmin.com 被风控的 CI 环境。
+   */
+  oauth1Token?: { key: string; secret?: string };
   /** 目标日期（YYYY-MM-DD），默认今天（Asia/Shanghai） */
   date?: string;
   /** 只生成不推送 */
@@ -46,7 +51,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
 
   const auth = new GarminAuth(log);
   try {
-    await auth.login(config.username, config.password);
+    if (config.oauth1Token?.key) {
+      await auth.loginWithOauth1(config.oauth1Token);
+    } else {
+      await auth.login(config.username, config.password);
+    }
     await auth.getProfile();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

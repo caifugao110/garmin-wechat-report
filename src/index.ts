@@ -13,15 +13,25 @@ async function main(): Promise<void> {
   const username = process.env.GARMIN_USERNAME;
   const password = process.env.GARMIN_PASSWORD;
   const sendKey = process.env.SERVERCHAN_SENDKEY;
+  // CI 推荐：本机 `npm run token` 生成，绕开 sso.garmin.com 对机房 IP 的风控
+  const oauth1Token = process.env.GARMIN_OAUTH1_TOKEN
+    ? {
+        key: process.env.GARMIN_OAUTH1_TOKEN,
+        secret: process.env.GARMIN_OAUTH1_TOKEN_SECRET,
+      }
+    : undefined;
 
-  if (!username || !password) {
-    throw new Error('缺少 GARMIN_USERNAME / GARMIN_PASSWORD 环境变量');
+  if (!oauth1Token && (!username || !password)) {
+    throw new Error(
+      '缺少凭据：请配置 GARMIN_USERNAME / GARMIN_PASSWORD，或配置 GARMIN_OAUTH1_TOKEN（+GARMIN_OAUTH1_TOKEN_SECRET）',
+    );
   }
 
   console.log('[main] 开始执行 Garmin 每日报告任务');
   const result = await runPipeline({
-    username,
-    password,
+    username: username ?? '',
+    password: password ?? '',
+    oauth1Token,
     sendKey,
     dryRun: process.env.DRY_RUN === '1',
     log: (msg) => console.log(msg),
