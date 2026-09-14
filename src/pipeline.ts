@@ -9,7 +9,9 @@
 import { GarminAuth } from './garmin/auth.js';
 import { GarminApi } from './garmin/api.js';
 import { formatReport, buildTrend } from './report/formatter.js';
-import { pushReport, type PushResult } from './notify/ftqq.js';
+import { pushReport as pushFtqq, type PushResult } from './notify/ftqq.js';
+import { pushReport as pushWecom } from './notify/wecom.js';
+import { generateAdvice, type AiConfig } from './ai/advice.js';
 import { today, daysAgo } from './utils/time.js';
 import type { ReportData, WeeklyTrend } from './report/types.js';
 
@@ -19,11 +21,15 @@ export interface PipelineConfig {
   password: string;
   /** Server酱 SendKey，缺省则只生成报告不推送 */
   sendKey?: string;
+  /** 企业微信群机器人 Webhook key，缺省则跳过企业微信渠道 */
+  wecomKey?: string;
   /**
    * 长效 OAuth1 token（本机 `npm run token` 生成）。
    * 提供时跳过 SSO 账号密码登录，用于 sso.garmin.com 被风控的 CI 环境。
    */
   oauth1Token?: { key: string; secret?: string };
+  /** AI 分析配置，缺省则跳过 AI 建议 */
+  ai?: AiConfig;
   /** 目标日期（YYYY-MM-DD），默认今天（Asia/Shanghai） */
   date?: string;
   /** 只生成不推送 */
@@ -35,7 +41,10 @@ export interface PipelineResult {
   date: string;
   title: string;
   report: string;
+  /** Server酱推送结果 */
   push: PushResult | null;
+  /** 企业微信推送结果 */
+  pushWecom: PushResult | null;
 }
 
 /** 秒 → 小时（保留 1 位），0 视为无数据 */
@@ -60,8 +69,14 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`[pipeline] 认证失败：${msg}`);
-    if (config.sendKey && !config.dryRun) {
-      await pushReport(config.sendKey, 'Garmin 日报登录失败', `登录失败：${msg}\n\n请检查账号密码或是否触发了两步验证。`);
+    if (!config.dryRun) {
+      const failBody = `登录失败：${msg}\n\n请检查账号密码或是否触发了两步验证。`;
+      if (config.sendKey) {
+        await pushFtqq(config.sendKey, 'Garmin 日报登录失败', failBody);
+      }
+      if (config.wecomKey) {
+        await pushWecom(config.wecomKey, 'Garmin 日报登录失败', failBody);
+      }
     }
     throw err;
   }
@@ -131,13 +146,42 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   const report = formatReport(reportData);
   const title = `Garmin 日报 ${date}`;
 
-  if (!config.sendKey || config.dryRun) {
-    log('[pipeline] 未配置 SendKey 或已开启 dryRun，跳过推送');
-    return { date, title, report, push: null };
+  // 可选：AI 分析，失败被 catch 后不影响主报告推送
+  let finalReport = report;
+  if (config.ai?.apiKey) {
+    try {
+      log(`[pipeline] 调用 AI 分析（${config.ai.baseUrl} / ${config.ai.model}）`);
+      const advice = await generateAdvice(report, config.ai);
+      if (advice) {
+        finalReport = `${report}\n\n## AI 健康建议\n\n${advice}\n\n> 以上建议由 AI 生成，仅供参考，不构成医疗建议。`;
+        log('[pipeline] AI 分析完成');
+      } else {
+        log('[pipeline] AI 未返回内容，跳过追加');
+      }
+    } catch (err) {
+      log(`[pipeline] AI 分析失败，跳过：${err instanceof Error ? err.message : err}`);
+    }
   }
 
-  log('[pipeline] 推送到 Server酱');
-  const push = await pushReport(config.sendKey, title, report);
-  log(`[pipeline] 推送结果：${push.success ? '成功' : `失败 - ${push.message}`}`);
-  return { date, title, report, push };
+  if ((!config.sendKey && !config.wecomKey) || config.dryRun) {
+    log('[pipeline] 未配置任何推送渠道或已开启 dryRun，跳过推送');
+    return { date, title, report: finalReport, push: null, pushWecom: null };
+  }
+
+  let push: PushResult | null = null;
+  let wecomPush: PushResult | null = null;
+
+  if (config.sendKey) {
+    log('[pipeline] 推送到 Server酱');
+    push = await pushFtqq(config.sendKey, title, finalReport);
+    log(`[pipeline] Server酱推送：${push.success ? '成功' : `失败 - ${push.message}`}`);
+  }
+
+  if (config.wecomKey) {
+    log('[pipeline] 推送到企业微信群');
+    wecomPush = await pushWecom(config.wecomKey, title, finalReport);
+    log(`[pipeline] 企业微信推送：${wecomPush.success ? '成功' : `失败 - ${wecomPush.message}`}`);
+  }
+
+  return { date, title, report: finalReport, push, pushWecom: wecomPush };
 }

@@ -10,3 +10,12 @@ crons = ["30 23 * * *"]
 #   wrangler secret put GARMIN_USERNAME
 #   wrangler secret put GARMIN_PASSWORD
 #   wrangler secret put SERVERCHAN_SENDKEY
+#   wrangler secret put GARMIN_OAUTH1_TOKEN
+#   wrangler secret put GARMIN_OAUTH1_TOKEN_SECRET
+#   wrangler secret put WECOM_BOT_KEY
+#   wrangler secret put AI_API_KEY
+
+# 非敏感配置可直接写入 [vars] 段（Workers 运行时可读）：
+[vars]
+AI_BASE_URL = "https://api.deepseek.com"
+AI_MODEL = "deepseek-chat"

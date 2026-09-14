@@ -41,5 +41,11 @@ jobs:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
           GARMIN_OAUTH1_TOKEN: ${{ secrets.GARMIN_OAUTH1_TOKEN }}
           GARMIN_OAUTH1_TOKEN_SECRET: ${{ secrets.GARMIN_OAUTH1_TOKEN_SECRET }}
+          # 可选：企业微信群机器人 Webhook key
+          WECOM_BOT_KEY: ${{ secrets.WECOM_BOT_KEY }}
+          # 可选：DeepSeek / OpenAI 兼容 AI 分析
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
           TZ: Asia/Shanghai
         run: npx tsx src/index.ts
