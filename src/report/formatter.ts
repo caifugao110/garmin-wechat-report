@@ -5,6 +5,7 @@
 
 import type { ReportData } from './types.js';
 import { formatDuration, formatMinutes, arrow, delta } from '../utils/time.js';
+import { generateAdvice } from './advice.js';
 
 const QUALIFIER_MAP: Record<string, string> = {
   EXCELLENT: '优秀',
@@ -257,6 +258,19 @@ function formatTrendsSection(data: ReportData): string {
   return lines.join('\n');
 }
 
+/** 今日建议（本地规则引擎，见 advice.ts） */
+function formatAdviceSection(data: ReportData): string {
+  const tips = generateAdvice(data);
+  if (tips.length === 0) return '';
+  return [
+    '## 今日建议',
+    '',
+    ...tips.map((tip) => `- ${tip}`),
+    '',
+    '> 以上建议由本地规则引擎根据固定阈值自动生成，仅供参考，不构成医疗建议。',
+  ].join('\n');
+}
+
 export function formatReport(data: ReportData): string {
   const parts: string[] = [];
   parts.push(`# Garmin 日报 ${data.date}`);
@@ -275,6 +289,11 @@ export function formatReport(data: ReportData): string {
   const trends = formatTrendsSection(data);
   if (trends) {
     parts.push(trends);
+    parts.push('');
+  }
+  const advice = formatAdviceSection(data);
+  if (advice) {
+    parts.push(advice);
     parts.push('');
   }
   return parts.join('\n');
