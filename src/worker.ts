@@ -1,7 +1,7 @@
 /**
  * Cloudflare Workers 入口
  *
- * - 由 Cron Triggers 触发（wrangler.toml 中配置 UTC 23:30 = 北京 07:30）
+ * - 由 Cron Triggers 触发（wrangler.toml 中配置 UTC 23:40 = 北京 07:40）
  * - 也可手动 GET /run 触发，便于调试
  *
  * 依赖 secrets：GARMIN_USERNAME / GARMIN_PASSWORD / SERVERCHAN_SENDKEY

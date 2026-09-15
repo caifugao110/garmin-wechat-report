@@ -14,9 +14,10 @@
 - 训练负荷与恢复：训练准备度、建议恢复时间、训练状态、VO2max、急慢性负荷比
 - 与 7 天前数据的周度趋势对比
 - **内置规则引擎**：离线根据阈值自动生成「今日建议」，重要告警优先展示，无需任何外部服务
-- Server酱 推送到微信；失败时自动推送异常通知
+- **AI 健康分析（可选，已内置）**：配置 DeepSeek 等任意 OpenAI 兼容服务的 API Key 后，报告末尾自动追加一段个性化大模型建议；AI 接口失败只记日志，不影响正常推送
+- Server酱 / 企业微信群机器人推送到微信；失败时自动推送异常通知
 - 三种运行方式：本地命令行、GitHub Actions 定时任务、Cloudflare Workers Cron
-- 报告结构模块化，方便改造内容、接入 AI 分析或更换推送渠道（见下文指南）
+- 报告结构模块化，方便改造内容或更换推送渠道（见下文指南）
 
 ## 工作原理
 
@@ -28,7 +29,8 @@ src/worker.ts（Worker 入口）┘            │
                                          ├─ 2. garmin/api.ts    并发拉取睡眠 / 总览 / HRV / 训练数据
                                          ├─ 3. report/formatter.ts 生成 Markdown
                                          │      └─ report/advice.ts 规则引擎生成「今日建议」
-                                         └─ 4. notify/ftqq.ts   推送到微信
+                                         ├─ 4. ai/advice.ts       （可选）调用大模型追加「AI 健康建议」
+                                         └─ 5. notify/            Server酱 / 企业微信推送
 ```
 
 两个入口共用同一份 `pipeline.ts`，因此无论用哪种部署方式，报告内容和行为完全一致。
@@ -48,6 +50,10 @@ src/worker.ts（Worker 入口）┘            │
 | `GARMIN_OAUTH1_TOKEN` | 二选一 | 长效 OAuth1 token，`npm run token` 生成，CI 推荐 |
 | `GARMIN_OAUTH1_TOKEN_SECRET` | 配合 token | OAuth1 token secret |
 | `SERVERCHAN_SENDKEY` | 否 | Server酱 SendKey，不配置则只生成报告不推送 |
+| `WECOM_BOT_KEY` | 否 | 企业微信群机器人 Webhook key，配置后额外推送一份到企业微信群 |
+| `AI_API_KEY` | 否 | 开启 AI 健康分析的 API Key（DeepSeek 等 OpenAI 兼容服务），不配置则跳过 AI 步骤 |
+| `AI_BASE_URL` | 否 | OpenAI 兼容接口地址，默认 `https://api.deepseek.com` |
+| `AI_MODEL` | 否 | 模型名，默认 `deepseek-chat` |
 | `DRY_RUN` | 否 | 设为 `1` 时只生成不推送，本地调试用 |
 
 本地运行时变量从 `.env` 读取；GitHub Actions 从 **Repository secrets** 注入；Cloudflare Workers 从 **Wrangler secrets** 注入。三种方式的变量名完全相同。
@@ -90,6 +96,10 @@ npm start
 | `GARMIN_OAUTH1_TOKEN` | 二选一（推荐） | 本机执行 `npm run token` 得到的 token |
 | `GARMIN_OAUTH1_TOKEN_SECRET` | 配合 token | 本机执行 `npm run token` 得到的 secret |
 | `SERVERCHAN_SENDKEY` | 推荐 | Server酱 SendKey，不填则只跑任务不推送 |
+| `WECOM_BOT_KEY` | 否 | 企业微信群机器人 Webhook key，配置后额外推送到企业微信群 |
+| `AI_API_KEY` | 否 | 开启 AI 健康分析；不配置则报告不含 AI 建议区块 |
+| `AI_BASE_URL` | 否 | 自定义 OpenAI 兼容接口地址，不配则默认 DeepSeek |
+| `AI_MODEL` | 否 | 模型名，不配则默认 `deepseek-chat` |
 
 即：**账号密码** 与 **OAuth1 token** 两组凭据二选一。推荐使用 token 方案（原因见下文风控说明）。配好后 secret 列表应类似：
 
@@ -99,6 +109,11 @@ GARMIN_OAUTH1_TOKEN_SECRET
 GARMIN_PASSWORD
 GARMIN_USERNAME
 SERVERCHAN_SENDKEY
+# 以下为可选项：
+WECOM_BOT_KEY
+AI_API_KEY
+AI_BASE_URL
+AI_MODEL
 ```
 
 关于 Repository secrets 的几点说明：
@@ -121,14 +136,16 @@ SERVERCHAN_SENDKEY
 ```yaml
 on:
   schedule:
-    - cron: '30 23 * * *'   # UTC 23:30 = 北京时间次日 07:30
+    - cron: '40 23 * * *'   # 主触发：UTC 23:40 = 北京时间次日 07:40
+    - cron: '50 23 * * *'   # 备用触发：UTC 23:50 = 北京时间次日 07:50
   workflow_dispatch:        # 保留手动触发
 ```
 
 注意：
 
+- 每天有两个定时触发：**北京 07:40 主触发、07:50 备用触发**。工作流启动时会通过 GitHub API 检查 12 小时内是否已有**成功**的定时运行：已有则备用触发自动跳过，不会重复推送；主触发失败、延迟或被 GitHub 跳过时，备用触发负责补发。手动触发（workflow_dispatch）不受此限制。
 - GitHub Actions 的 cron 使用 **UTC 时间**，北京时间 = UTC + 8。想改推送时间就修改 [.github/workflows/daily-report.yml](.github/workflows/daily-report.yml) 中的 cron，例如 `0 0 * * *` 是北京 08:00、`0 22 * * *` 是北京 06:00。
-- GitHub 的定时任务不保证准点，高峰期可能延迟几分钟到几十分钟。
+- GitHub 的定时任务不保证准点，高峰期可能延迟几分钟到几十分钟，极端情况下会被直接丢弃——这正是配置备用触发的原因。
 - 仓库连续 60 天没有任何提交活动时，GitHub 会自动暂停定时 workflow；重新到 Actions 页面启用或推送一次提交即可恢复。
 
 ### 重要：GitHub Actions 登录被 Garmin 风控怎么办？
@@ -181,7 +198,7 @@ npm run worker:dev
 npm run deploy
 ```
 
-- 定时规则在 [wrangler.toml](wrangler.toml) 中配置（默认 UTC 23:30 = 北京 07:30）
+- 定时规则在 [wrangler.toml](wrangler.toml) 中配置（默认 UTC 23:40 = 北京 07:40）。Cloudflare Cron 触发稳定、不会像 GitHub 那样丢调度，因此只配置一个时间点；备用补发机制仅用于 GitHub Actions
 - 部署后访问 `https://<your-worker>.workers.dev/run` 可手动触发
 - 追加 `?date=YYYY-MM-DD` 可补跑指定日期
 
@@ -292,7 +309,7 @@ export async function pushBark(deviceKey: string, title: string, content: string
 
 ## 今日建议：内置规则引擎与可选 AI 分析
 
-报告末尾的「今日建议」默认由**内置规则引擎**离线生成，不依赖任何外部服务；如果想要更个性化的自然语言分析，也可以再接入大模型（AI）。两者可以共存，也可以互相替换。
+报告末尾的「今日建议」默认由**内置规则引擎**离线生成，不依赖任何外部服务；此外项目还**内置了可选的 AI 健康分析**，配置 API Key 后会在规则建议之后再追加一段大模型生成的个性化自然语言建议。两者默认共存（规则建议在前、AI 建议在后），也可以按需只保留其一。
 
 ### 内置规则引擎（默认开启，离线运行）
 
@@ -328,49 +345,17 @@ export async function pushBark(deviceKey: string, title: string, content: string
 
 **关闭规则引擎**：删除 [src/report/formatter.ts](src/report/formatter.ts) 中 `formatReport` 里调用 `formatAdviceSection` 的几行（同时移除文件顶部的 `import { generateAdvice } ...`）即可；不需要改动其他文件。
 
-### 接入 AI 分析（可选）
+### AI 健康分析（可选，已内置）
 
-如果希望在规则建议之外再追加一段个性化自然语言分析，可以在「生成 Markdown 之后、推送之前」插入一步 AI 调用。全程用原生 `fetch`，无需引入 SDK，Node 与 Workers 都能跑。下面给出完整接入方式。
+除了离线规则建议，项目还**内置**了大模型（AI）分析：在 Markdown 报告生成之后、推送之前，把完整日报发送给任意 OpenAI 兼容服务，由模型针对明显偏离个人基线的指标输出 3–5 条中文短句，并以「AI 健康建议」区块追加到报告末尾。调用逻辑在 [src/ai/advice.ts](src/ai/advice.ts)，挂载点在 [src/pipeline.ts](src/pipeline.ts) 中 `formatReport` 之后；全程使用原生 `fetch`，无 SDK 依赖，Node 与 Workers 均可运行。
 
-#### 第 1 步：新建 AI 分析模块
+**开启方式**：只需配置 `AI_API_KEY`。未配置时整个 AI 步骤自动跳过，行为与纯规则引擎完全一致。
 
-新建 `src/ai/advice.ts`，调用任意 OpenAI 兼容接口（DeepSeek、通义千问、Moonshot、OpenAI 等均兼容）：
-
-```ts
-export interface AiConfig {
-  apiKey: string;
-  baseUrl: string; // 例如 https://api.deepseek.com
-  model: string;   // 例如 deepseek-chat
-}
-
-export async function generateAdvice(report: string, config: AiConfig): Promise<string | null> {
-  const resp = await fetch(`${config.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      temperature: 0.5,
-      messages: [
-        {
-          role: 'system',
-          content: [
-            '你是一名严谨的运动健康助理，基于 Garmin 健康数据给出建议。',
-            '要求：只针对数据中明显偏离个人基线的指标；输出 3-5 条中文短句；',
-            '不做医疗诊断，数据不足时说明。',
-          ].join(''),
-        },
-        { role: 'user', content: `以下是我今天的 Garmin 日报：\n\n${report}` },
-      ],
-    }),
-  });
-  if (!resp.ok) throw new Error(`AI 接口返回 ${resp.status}`);
-  const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
-  return data.choices?.[0]?.message?.content?.trim() ?? null;
-}
-```
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `AI_API_KEY` | 开启时必填 | — | 服务商 API Key；未配置则不调用 AI |
+| `AI_BASE_URL` | 否 | `https://api.deepseek.com` | OpenAI 兼容接口地址（注意部分服务商需要带 `/v1`） |
+| `AI_MODEL` | 否 | `deepseek-chat` | 模型名 |
 
 常见兼容服务配置：
 
@@ -381,42 +366,20 @@ export async function generateAdvice(report: string, config: AiConfig): Promise<
 | Moonshot Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
 
-#### 第 2 步：在 pipeline 中挂载
+**三种运行方式分别如何配置**（代码均已接线，无需改代码）：
 
-在 [src/pipeline.ts](src/pipeline.ts) 的 `PipelineConfig` 增加可选字段 `ai?: AiConfig`，并在 `const report = formatReport(reportData)` 之后加入：
+- **本地运行**：在 `.env` 中填写上述三个变量即可，[.env.example](.env.example) 已预留；[src/index.ts](src/index.ts) 会自动读取并传入 `runPipeline`。
+- **GitHub Actions**：在 **Settings → Secrets and variables → Actions** 添加 `AI_API_KEY`（需要换服务商时再加 `AI_BASE_URL`、`AI_MODEL`）。[.github/workflows/daily-report.yml](.github/workflows/daily-report.yml) 的 **Run report** 步骤已透传这三个变量，添加 secret 后下一次运行即生效。
+- **Cloudflare Workers**：执行 `npx wrangler secret put AI_API_KEY` 写入密钥；`AI_BASE_URL`、`AI_MODEL` 已预置在 [wrangler.toml](wrangler.toml) 的 `[vars]` 段，直接改默认值即可，[src/worker.ts](src/worker.ts) 已完成读取。
 
-```ts
-let finalReport = report;
-if (config.ai?.apiKey) {
-  try {
-    const advice = await generateAdvice(report, config.ai);
-    if (advice) {
-      finalReport = `${report}\n\n## AI 健康建议\n\n${advice}\n\n> 以上建议由 AI 生成，仅供参考，不构成医疗建议。`;
-    }
-  } catch (err) {
-    log(`[pipeline] AI 分析失败，跳过：${err instanceof Error ? err.message : err}`);
-  }
-}
-```
+**行为与定制**：
 
-然后把后面推送用的 `report` 改为 `finalReport`。AI 失败被 catch 后不影响主报告推送。
+- AI 接口超时、报错或返回空内容时，错误只写入运行日志（`AI 分析失败，跳过`），**不影响主报告生成与微信推送**。
+- AI 区块末尾固定附带「以上建议由 AI 生成，仅供参考，不构成医疗建议」声明。
+- 想调整分析风格、条数或提示词：修改 [src/ai/advice.ts](src/ai/advice.ts) 中的 system message 与 `temperature`。
+- 想让 AI 建议**替换**而非追加规则建议：在 [src/report/formatter.ts](src/report/formatter.ts) 的 `formatReport` 中去掉 `formatAdviceSection` 调用即可。
 
-#### 第 3 步：注入环境变量
-
-- 本地：在 `.env` 增加 `AI_API_KEY`、`AI_BASE_URL`、`AI_MODEL`，在 [src/index.ts](src/index.ts) 仿照其他变量读取并传入 `runPipeline`。
-- GitHub Actions：先在 **Repository secrets** 添加 `AI_API_KEY`（非敏感的 `AI_BASE_URL`、`AI_MODEL` 也可加到 secrets），再编辑 [.github/workflows/daily-report.yml](.github/workflows/daily-report.yml)，在 **Run report** 步骤的 `env:` 中显式透传（workflow 不会自动读取新变量）：
-
-  ```yaml
-  env:
-    # ...已有变量...
-    AI_API_KEY: ${{ secrets.AI_API_KEY }}
-    AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
-    AI_MODEL: ${{ secrets.AI_MODEL }}
-  ```
-
-- Cloudflare Workers：`npx wrangler secret put AI_API_KEY`；`AI_BASE_URL`、`AI_MODEL` 不敏感，可直接写入 [wrangler.toml](wrangler.toml) 的 `[vars]` 段，并在 [src/worker.ts](src/worker.ts) 的 `Env` 接口补充字段。
-
-注意：接入后你的健康数据会发送给第三方 AI 服务商，请确认其隐私政策；在意隐私可只传指标数值、不传姓名等信息。若只想用 AI 建议替换而非追加，可以在 `formatReport` 中跳过 `formatAdviceSection`，或让 AI 区块标题与规则区块保持一致。
+> 隐私提示：开启 AI 后，你的健康数据（日报正文）会发送给第三方 AI 服务商，请先确认其隐私政策。日报本身不含姓名等身份信息；如仍介意，可在 [src/pipeline.ts](src/pipeline.ts) 调用 `generateAdvice` 前对报告内容做裁剪。
 
 ## Fork 后二次开发指南
 
@@ -435,7 +398,9 @@ src/garmin/endpoints.ts             Garmin API 路径常量
 src/report/formatter.ts             Markdown 报告渲染
 src/report/advice.ts                本地规则引擎：生成「今日建议」
 src/report/types.ts                 全部数据类型定义
+src/ai/advice.ts                    可选 AI 健康建议（OpenAI 兼容接口）
 src/notify/ftqq.ts                  Server酱推送
+src/notify/wecom.ts                 企业微信群机器人推送
 src/utils/time.ts                   时区 / 日期 / 时长格式化
 wrangler.toml                       Cloudflare Workers 配置
 ```
@@ -446,7 +411,7 @@ wrangler.toml                       Cloudflare Workers 配置
 2. `GarminAuth` 完成认证（账号密码走 SSO；有 token 则直连换取会话）。
 3. `GarminApi` 用 `Promise.allSettled` **并发**拉取当日五类数据，单个接口失败不影响其他区块（失败信息进入 `xxxError` 字段，报告中显示「拉取失败」）。
 4. 再拉取 7 天前数据，用 `buildTrend` 计算周度趋势。
-5. `formatReport` 渲染 Markdown，末尾通过 `generateAdvice` 规则引擎生成「今日建议」，最后 `pushReport` 推送。
+5. `formatReport` 渲染 Markdown，末尾通过规则引擎生成「今日建议」；若配置了 `AI_API_KEY`，再调用 [src/ai/advice.ts](src/ai/advice.ts) 在报告末尾追加「AI 健康建议」区块（AI 失败只记日志、不影响推送），最后通过 `pushReport` 推送到 Server酱 / 企业微信。
 
 ### 新增一个数据指标的完整链路
 
@@ -518,6 +483,8 @@ CI 环境改用上文的 OAuth1 token 方案。
 **Actions 页面没有定时运行记录？**
 检查 workflow 是否处于 Disabled 状态；Fork 仓库需手动启用一次 Actions；
 仓库超过 60 天无活动定时任务会被 GitHub 自动暂停，推送一次提交或重新启用即可。
+已配置 07:50 备用触发：若 07:40 的主触发被 GitHub 丢弃，备用触发会在检测到当天无成功记录后自动补发；
+如果两个时间点都没有任何运行记录，再按上述几项排查。
 
 **某些区块显示「拉取失败」或 N/A？**
 单项接口失败不会影响其他数据。可能是当天该类数据尚未同步（早晨太早、手表未同步），
