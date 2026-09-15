@@ -12,7 +12,7 @@ import { formatReport, buildTrend } from './report/formatter.js';
 import { pushReport as pushFtqq, type PushResult } from './notify/ftqq.js';
 import { pushReport as pushWecom } from './notify/wecom.js';
 import { generateAdvice, type AiConfig } from './ai/advice.js';
-import { today, daysAgo } from './utils/time.js';
+import { daysAgo } from './utils/time.js';
 import type { ReportData, WeeklyTrend } from './report/types.js';
 
 export interface PipelineConfig {
@@ -55,7 +55,7 @@ function hours(seconds: number | null | undefined): number | null {
 
 export async function runPipeline(config: PipelineConfig): Promise<PipelineResult> {
   const log = config.log ?? (() => {});
-  const date = config.date ?? today();
+  const date = config.date ?? daysAgo(1);
   const date7Ago = daysAgo(7);
 
   const auth = new GarminAuth(log);
@@ -83,7 +83,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
 
   const api = new GarminApi(auth);
 
-  log('[pipeline] 拉取当日数据');
+  log('[pipeline] 拉取昨日数据');
   const [sleepP, dailyP, healthP, readinessP, trainingP] = await Promise.allSettled([
     api.getSleep(date),
     api.getDailySummary(date),

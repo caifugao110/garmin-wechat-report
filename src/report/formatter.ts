@@ -112,14 +112,14 @@ function formatSleepSection(data: ReportData): string {
 
 function formatDailySection(data: ReportData): string {
   if (data.dailyError) {
-    return `## 每日健康总览
+    return `## 昨日健康总览
 
 > 拉取失败：${data.dailyError}`;
   }
   const d = data.daily;
-  if (!d) return '## 每日健康总览\n\n无数据';
+  if (!d) return '## 昨日健康总览\n\n无数据';
 
-  const lines: string[] = ['## 每日健康总览', ''];
+  const lines: string[] = ['## 昨日健康总览', ''];
   if (d.steps !== null && d.stepGoal !== null) {
     lines.push(row('步数', `${d.steps} / ${d.stepGoal}`));
   } else if (d.steps !== null) {
