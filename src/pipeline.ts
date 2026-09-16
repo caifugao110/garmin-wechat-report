@@ -13,7 +13,8 @@ import { pushReport as pushFtqq, type PushResult } from './notify/ftqq.js';
 import { pushReport as pushWecom } from './notify/wecom.js';
 import { generateAdvice, type AiConfig } from './ai/advice.js';
 import { daysAgo } from './utils/time.js';
-import type { ReportData, WeeklyTrend } from './report/types.js';
+import { getLatestWeight, getWeight, type HealthKV } from './health/weight.js';
+import type { ReportData, WeeklyTrend, WeightData } from './report/types.js';
 
 export interface PipelineConfig {
   /** Garmin 账号 */
@@ -34,6 +35,8 @@ export interface PipelineConfig {
   date?: string;
   /** 只生成不推送 */
   dryRun?: boolean;
+  /** 体重数据 KV，配置后日报展示体重/体成分 */
+  healthKv?: HealthKV;
   log?: (message: string) => void;
 }
 
@@ -128,6 +131,33 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     trends.push(buildTrend('夜间HRV', health7.hrvLastNightAvg, health.value.hrvLastNightAvg));
   }
 
+  // 可选：读取体重数据（未配置 KV 或无数据则跳过）。
+  // 日报覆盖"昨日"，但当天早上的称重也应纳入，因此取昨日 + 今天中最新的测量。
+  let weight: WeightData | null = null;
+  if (config.healthKv) {
+    const latest = await getLatestWeight(config.healthKv, [date, daysAgo(0)]);
+    if (latest) {
+      const weight7 = await getWeight(config.healthKv, daysAgo(7));
+      weight = {
+        displayDate: latest.date,
+        measuredAtLocal: new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Asia/Shanghai',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }).format(new Date(latest.measuredAtEpochMs)),
+        weightKg: latest.weightKg,
+        bodyFatRate: latest.bodyFatRate,
+        bmi: latest.bmi,
+        muscleMassKg: latest.muscleMassKg,
+        sevenDaysAgoKg: weight7?.weightKg,
+      };
+      if (weight7 && weight7.measuredAtEpochMs !== latest.measuredAtEpochMs) {
+        trends.push(buildTrend('体重(kg)', weight7.weightKg, latest.weightKg));
+      }
+    }
+  }
+
   const reportData: ReportData = {
     date,
     sleep: sleep.value,
@@ -141,6 +171,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     training: training.value,
     trainingError: training.error,
     trends,
+    weight,
   };
 
   const report = formatReport(reportData);

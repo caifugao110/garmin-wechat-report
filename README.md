@@ -13,6 +13,7 @@
 - 夜间生理指标：HRV、基线区间、近 7 天平均
 - 训练负荷与恢复：训练准备度、建议恢复时间、训练状态、VO2max、急慢性负荷比
 - 与 7 天前数据的周度趋势对比
+- **体重与体成分（可选）**：iPhone 把 Apple 健康中的体重 / 体脂率 / BMI / 肌肉量推送到 Worker webhook，日报自动展示，支持 7 天趋势对比（适用于华为体脂秤等经华为运动健康同步到 Apple 健康的数据）
 - **内置规则引擎**：离线根据阈值自动生成「今日建议」，重要告警优先展示，无需任何外部服务
 - **AI 健康分析（可选，已内置）**：配置 DeepSeek 等任意 OpenAI 兼容服务的 API Key 后，报告末尾自动追加一段个性化大模型建议；AI 接口失败只记日志，不影响正常推送
 - Server酱 / 企业微信群机器人推送到微信；失败时自动推送异常通知
@@ -222,7 +223,7 @@ npm run deploy
 ```
 
 - 定时规则在 [wrangler.toml](wrangler.toml) 中配置（默认 UTC 23:40 = 北京 07:40）。Cloudflare Cron 触发稳定、不会像 GitHub 那样丢调度，因此只配置一个时间点；备用补发机制仅用于 GitHub Actions
-- 部署后访问 `https://<your-worker>.workers.dev/run` 可手动触发
+- 部署后访问 `https://garmin-daily-report.caifugao110.workers.dev/run` 可手动触发
 - 追加 `?date=YYYY-MM-DD` 可补跑指定日期
 
 ### 如何关闭 / 停用 Cloudflare Workers 部署
@@ -233,6 +234,63 @@ npm run deploy
 4. **清理凭据（可选）**：`npx wrangler secret list` 查看，`npx wrangler secret delete <名称>` 删除。
 
 > GitHub Actions 与 Cloudflare Workers 两种部署互不冲突，可只用一种，也可同时部署。若同时启用，请确认两边的定时时间错开，避免同一账号短时间内发起两次登录触发 429。
+
+## 体重数据接入（可选，需 Cloudflare Workers）
+
+把 iPhone「Apple 健康」中的体重 / 体脂率 / BMI / 肌肉量（华为体脂秤等设备经华为运动健康 App 同步而来）推送到 Worker，日报中会新增「体重与体成分」板块并在周度趋势表展示体重变化。
+
+数据链路：
+
+```
+体脂秤 → 华为运动健康(iOS，开启 Apple 健康同步) → Apple 健康 → iPhone 快捷指令 / Health Auto Export
+      → POST https://garmin-daily-report.caifugao110.workers.dev/webhook/weight → Worker KV → 日报展示
+```
+
+### 启用步骤
+
+```bash
+# 1. 创建 KV namespace，把返回的 id 填入 wrangler.toml 并取消 kv_namespaces 注释
+npx wrangler kv namespace create HEALTH_KV
+
+# 2. 写入鉴权 token（自填随机字符串）
+npx wrangler secret put WEIGHT_WEBHOOK_SECRET
+
+# 3. 重新部署
+npm run deploy
+```
+
+### 推送端配置（二选一）
+
+**方式 A：iOS 快捷指令（免费）**
+
+1. 快捷指令 → 自动化 → 新建「个人自动化」→ 选「特定时间」（如 07:20）
+2. 添加动作「查找健康样本」（类别选体重 / 体脂率等）获取最新数据
+3. 用「词典」动作构造 JSON 文本，例如：
+
+```json
+{"weight": 72.5, "bodyFatRate": 20.1, "bmi": 23.1, "muscleMass": 55.2}
+```
+
+4. 添加「获取 URL 内容」：URL 填 `https://garmin-daily-report.caifugao110.workers.dev/webhook/weight`，方法 POST，请求体选上一步的 JSON，添加 Header `Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>`
+
+**方式 B：Health Auto Export App（需 Premium）**
+
+1. Automations → + → REST API
+2. URL 填 `https://garmin-daily-report.caifugao110.workers.dev/webhook/weight`，Format 选 JSON
+3. HTTP Headers 添加 `Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>`
+4. Health Metrics 勾选 Body Mass / Body Fat Percentage / Body Mass Index / Lean Body Mass
+5. Schedule 选 Automatic（或每天固定时间）
+
+两种格式服务端均支持（自动识别）。手动验证：
+
+```bash
+curl -X POST https://garmin-daily-report.caifugao110.workers.dev/webhook/weight \
+  -H "Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>" \
+  -H "Content-Type: application/json" \
+  -d '{"weight": 72.5, "bodyFatRate": 20.1}'
+```
+
+> 说明：日报每天 07:40 生成，会读取昨天 + 今天两条 KV 记录中最新的一次测量，因此晚上称或早上称都会出现在当天日报里；数据经 HTTPS + Bearer token 传输，仅存于你自己的 KV。
 
 ## 腾讯云函数 SCF 部署（企业微信对话式 AI）
 

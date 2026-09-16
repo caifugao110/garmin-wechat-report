@@ -271,6 +271,25 @@ function formatAdviceSection(data: ReportData): string {
   ].join('\n');
 }
 
+/** 体重/体成分 section，无数据返回 '' 不占版面 */
+function formatWeightSection(data: ReportData): string {
+  const w = data.weight;
+  if (!w) return '';
+
+  const lines: string[] = ['## 体重与体成分', ''];
+  lines.push(row('体重', String(w.weightKg), ' kg'));
+  if (w.sevenDaysAgoKg !== null && w.sevenDaysAgoKg !== undefined) {
+    lines.push(
+      row('7 天变化', `${arrow(w.weightKg, w.sevenDaysAgoKg)} ${delta(w.weightKg, w.sevenDaysAgoKg)} kg`),
+    );
+  }
+  if (w.bodyFatRate !== undefined) lines.push(row('体脂率', String(w.bodyFatRate), '%'));
+  if (w.bmi !== undefined) lines.push(row('BMI', String(w.bmi)));
+  if (w.muscleMassKg !== undefined) lines.push(row('肌肉量', String(w.muscleMassKg), ' kg'));
+  lines.push(row('测量时间', `${w.displayDate} ${w.measuredAtLocal}`));
+  return lines.join('\n');
+}
+
 export function formatReport(data: ReportData): string {
   const parts: string[] = [];
   parts.push(`# Garmin 日报 ${data.date}`);
@@ -279,6 +298,11 @@ export function formatReport(data: ReportData): string {
   parts.push('');
   parts.push(formatDailySection(data));
   parts.push('');
+  const weight = formatWeightSection(data);
+  if (weight) {
+    parts.push(weight);
+    parts.push('');
+  }
   const health = formatHealthSection(data);
   if (health) {
     parts.push(health);

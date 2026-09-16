@@ -15,6 +15,7 @@ The Garmin authentication chain (OAuth1 → OAuth2) is implemented with plain HT
 - Overnight physiology: HRV, baseline range, 7-day average
 - Training load & recovery: training readiness, suggested recovery time, training status, VO2max, ACWR
 - Weekly trend comparison against the data from 7 days ago
+- **Weight & body composition (optional)**: an iPhone pushes weight / body fat / BMI / lean body mass from Apple Health to a Worker webhook, and the daily report shows a dedicated section with a 7-day trend (works for Huawei body-fat scales and any data synced into Apple Health via the Huawei Health app)
 - **Built-in rule engine**: offline threshold-based "Today's Advice", with the most important alerts ranked first — no external service required
 - **AI health analysis (optional, built in)**: set an API key for DeepSeek or any other OpenAI-compatible service, and a personalized LLM advice section is appended to the report automatically; AI failures are logged only and never block the push
 - Push to WeChat via ServerChan / a WeCom group bot; failure alerts are pushed automatically when something goes wrong
@@ -223,7 +224,7 @@ npm run deploy
 ```
 
 - The schedule is configured in [wrangler.toml](wrangler.toml) (default 23:40 UTC = 07:40 Beijing time). Cloudflare cron triggers are reliable and are not dropped the way GitHub scheduled runs can be, so only one trigger is configured; the backup mechanism is specific to GitHub Actions.
-- After deployment, visit `https://<your-worker>.workers.dev/run` to trigger manually.
+- After deployment, visit `https://garmin-daily-report.caifugao110.workers.dev/run` to trigger manually.
 - Append `?date=YYYY-MM-DD` to backfill a specific date.
 
 ### How to disable / stop Cloudflare Workers
@@ -234,6 +235,63 @@ npm run deploy
 4. **Clean up credentials (optional)**: list with `npx wrangler secret list` and remove with `npx wrangler secret delete <name>`.
 
 > GitHub Actions and Cloudflare Workers do not conflict — you can use either one or both. If you enable both, stagger their schedules so the same account does not log in twice in a short window and trigger a 429.
+
+## Weight Data Ingestion (optional, requires Cloudflare Workers)
+
+Push weight / body fat / BMI / lean body mass from Apple Health on your iPhone (e.g. data synced from a Huawei body-fat scale via the Huawei Health app) to the Worker. The daily report gains a "Weight & Body Composition" section and a weight row in the weekly trend table.
+
+Data flow:
+
+```
+Body-fat scale → Huawei Health (iOS, enable Apple Health sync) → Apple Health → Shortcuts / Health Auto Export
+      → POST https://garmin-daily-report.caifugao110.workers.dev/webhook/weight → Worker KV → daily report
+```
+
+### Setup
+
+```bash
+# 1. Create the KV namespace, put the returned id into wrangler.toml and uncomment kv_namespaces
+npx wrangler kv namespace create HEALTH_KV
+
+# 2. Store the auth token (any random string)
+npx wrangler secret put WEIGHT_WEBHOOK_SECRET
+
+# 3. Redeploy
+npm run deploy
+```
+
+### Push-side configuration (choose one)
+
+**Option A: iOS Shortcuts (free)**
+
+1. Shortcuts → Automation → New Personal Automation → "Time of Day" (e.g. 07:20)
+2. Add the "Find Health Samples" action (category: Weight / Body Fat, etc.) to fetch the latest value
+3. Build a JSON payload with the "Dictionary" action, for example:
+
+```json
+{"weight": 72.5, "bodyFatRate": 20.1, "bmi": 23.1, "muscleMass": 55.2}
+```
+
+4. Add "Get Contents of URL": URL `https://garmin-daily-report.caifugao110.workers.dev/webhook/weight`, method POST, body = the JSON above, header `Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>`
+
+**Option B: Health Auto Export app (Premium required)**
+
+1. Automations → + → REST API
+2. URL `https://garmin-daily-report.caifugao110.workers.dev/webhook/weight`, Format: JSON
+3. HTTP Headers: add `Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>`
+4. Health Metrics: enable Body Mass / Body Fat Percentage / Body Mass Index / Lean Body Mass
+5. Schedule: Automatic (or a fixed daily time)
+
+Both payload formats are supported server-side (auto-detected). Manual verification:
+
+```bash
+curl -X POST https://garmin-daily-report.caifugao110.workers.dev/webhook/weight \
+  -H "Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>" \
+  -H "Content-Type: application/json" \
+  -d '{"weight": 72.5, "bodyFatRate": 20.1}'
+```
+
+> Note: the report is generated daily at 07:40 and reads the most recent measurement across yesterday + today in KV, so both evening and morning weigh-ins appear in the same report. Data is transferred over HTTPS with a Bearer token and stored only in your own KV.
 
 ## Deploy on Tencent Cloud SCF (WeCom Chat Bot)
 

@@ -125,6 +125,24 @@ export interface WeeklyTrend {
   delta: string;
 }
 
+/** 体重/体成分（iPhone 推送存 KV，日报展示用） */
+export interface WeightData {
+  /** 测量时刻的本地日期（YYYY-MM-DD，Asia/Shanghai） */
+  displayDate: string;
+  /** 测量时刻本地时间（HH:mm） */
+  measuredAtLocal: string;
+  /** 体重（kg） */
+  weightKg: number;
+  /** 体脂率（%） */
+  bodyFatRate?: number;
+  /** BMI */
+  bmi?: number;
+  /** 肌肉量（kg） */
+  muscleMassKg?: number;
+  /** 7 天前体重（kg），用于变化展示 */
+  sevenDaysAgoKg?: number;
+}
+
 /** 报告所需的全部数据 */
 export interface ReportData {
   date: string;
@@ -139,4 +157,6 @@ export interface ReportData {
   training: TrainingStatus | null;
   trainingError: string | null;
   trends: WeeklyTrend[];
+  /** 体重/体成分，未配置 KV 或无数据为 null */
+  weight: WeightData | null;
 }

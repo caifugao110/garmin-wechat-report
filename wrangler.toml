@@ -6,6 +6,11 @@ compatibility_date = "2024-11-01"
 [triggers]
 crons = ["40 23 * * *"]
 
+# 体重/体脂数据存储（iPhone webhook 推送 → KV → 日报展示）
+[[kv_namespaces]]
+binding = "HEALTH_KV"
+id = "6dfb373ea5ca47c98267b208f4e53c87"
+
 # 敏感信息不在本文件声明，使用 `wrangler secret put` 写入：
 #   wrangler secret put GARMIN_USERNAME
 #   wrangler secret put GARMIN_PASSWORD
@@ -14,6 +19,8 @@ crons = ["40 23 * * *"]
 #   wrangler secret put GARMIN_OAUTH1_TOKEN_SECRET
 #   wrangler secret put WECOM_BOT_KEY
 #   wrangler secret put AI_API_KEY
+# 体重 webhook 鉴权 token（自填随机字符串，iPhone 推送端携带）：
+#   wrangler secret put WEIGHT_WEBHOOK_SECRET
 # 对话式 AI 助手（可选，配置后可在企业微信 App 内对话查询 Garmin 数据）：
 #   wrangler secret put WECOM_CORP_ID
 #   wrangler secret put WECOM_CORP_SECRET
