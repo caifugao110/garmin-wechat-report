@@ -236,29 +236,25 @@ npm run deploy
 
 > GitHub Actions and Cloudflare Workers do not conflict — you can use either one or both. If you enable both, stagger their schedules so the same account does not log in twice in a short window and trigger a 429.
 
-## Weight Data Ingestion (optional, requires Cloudflare Workers)
+## Weight Data Ingestion (optional, already configured)
 
-Push weight / body fat / BMI / lean body mass from Apple Health on your iPhone (e.g. data synced from a Huawei body-fat scale via the Huawei Health app) to the Worker. The daily report gains a "Weight & Body Composition" section and a weight row in the weekly trend table.
+Push weight / body fat / BMI / lean body mass from Apple Health on your iPhone (e.g. data synced from a Huawei body-fat scale via the Huawei Health app) to a Tencent SCF endpoint. The daily report gains a "Weight & Body Composition" section and a weight row in the weekly trend table.
 
-Data flow:
+Data flow (`*.workers.dev` is blocked on mainland networks, so the webhook is served by SCF, data is stored in COS, and the Worker reads from COS public-read at report time):
 
 ```
 Body-fat scale → Huawei Health (iOS, enable Apple Health sync) → Apple Health → Shortcuts / Health Auto Export
-      → POST https://garmin-daily-report.caifugao110.workers.dev/webhook/weight → Worker KV → daily report
+      → POST https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight
+      → SCF parses → Tencent COS (garmin-weight-data-1312201327, public-read/private-write)
+      → Worker fetches from COS → report rendering
 ```
 
-### Setup
+### Already configured
 
-```bash
-# 1. Create the KV namespace, put the returned id into wrangler.toml and uncomment kv_namespaces
-npx wrangler kv namespace create HEALTH_KV
-
-# 2. Store the auth token (any random string)
-npx wrangler secret put WEIGHT_WEBHOOK_SECRET
-
-# 3. Redeploy
-npm run deploy
-```
+- SCF function `garmin-wecom-bot` is deployed with the `/webhook/weight` route
+- COS bucket `garmin-weight-data-1312201327` (ap-shanghai) created with public-read/private-write ACL
+- SCF env vars set: `COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_BUCKET` / `COS_REGION`
+- Worker `[vars]` set: `COS_WEIGHT_BASE_URL`
 
 ### Push-side configuration (choose one)
 
@@ -272,26 +268,24 @@ npm run deploy
 {"weight": 72.5, "bodyFatRate": 20.1, "bmi": 23.1, "muscleMass": 55.2}
 ```
 
-4. Add "Get Contents of URL": URL `https://garmin-daily-report.caifugao110.workers.dev/webhook/weight`, method POST, body = the JSON above, header `Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>`
+4. Add "Get Contents of URL": URL `https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight`, method POST, body = the JSON above, Content-Type: application/json
 
 **Option B: Health Auto Export app (Premium required)**
 
 1. Automations → + → REST API
-2. URL `https://garmin-daily-report.caifugao110.workers.dev/webhook/weight`, Format: JSON
-3. HTTP Headers: add `Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>`
-4. Health Metrics: enable Body Mass / Body Fat Percentage / Body Mass Index / Lean Body Mass
-5. Schedule: Automatic (or a fixed daily time)
+2. URL `https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight`, Format: JSON
+3. Health Metrics: enable Body Mass / Body Fat Percentage / Body Mass Index / Lean Body Mass
+4. Schedule: Automatic (or a fixed daily time)
 
 Both payload formats are supported server-side (auto-detected). Manual verification:
 
 ```bash
-curl -X POST https://garmin-daily-report.caifugao110.workers.dev/webhook/weight \
-  -H "Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>" \
+curl -X POST https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight \
   -H "Content-Type: application/json" \
   -d '{"weight": 72.5, "bodyFatRate": 20.1}'
 ```
 
-> Note: the report is generated daily at 07:40 and reads the most recent measurement across yesterday + today in KV, so both evening and morning weigh-ins appear in the same report. Data is transferred over HTTPS with a Bearer token and stored only in your own KV.
+> Note: the report is generated daily at 07:40 and reads the most recent measurement across yesterday + today in COS, so both evening and morning weigh-ins appear in the same report. The SCF webhook currently has no auth (only exposes weight writes, low sensitivity); add a token via SCF env vars if needed.
 
 ## Deploy on Tencent Cloud SCF (WeCom Chat Bot)
 

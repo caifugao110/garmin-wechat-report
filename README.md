@@ -235,29 +235,25 @@ npm run deploy
 
 > GitHub Actions 与 Cloudflare Workers 两种部署互不冲突，可只用一种，也可同时部署。若同时启用，请确认两边的定时时间错开，避免同一账号短时间内发起两次登录触发 429。
 
-## 体重数据接入（可选，需 Cloudflare Workers）
+## 体重数据接入（可选，已配置完成）
 
-把 iPhone「Apple 健康」中的体重 / 体脂率 / BMI / 肌肉量（华为体脂秤等设备经华为运动健康 App 同步而来）推送到 Worker，日报中会新增「体重与体成分」板块并在周度趋势表展示体重变化。
+把 iPhone「Apple 健康」中的体重 / 体脂率 / BMI / 肌肉量（华为体脂秤等设备经华为运动健康 App 同步而来）推送到腾讯云函数，日报中会新增「体重与体成分」板块并在周度趋势表展示体重变化。
 
-数据链路：
+数据链路（`*.workers.dev` 在大陆被阻断，因此 webhook 由 SCF 承接，数据存 COS，Worker 日报时从 COS 公有读读取）：
 
 ```
 体脂秤 → 华为运动健康(iOS，开启 Apple 健康同步) → Apple 健康 → iPhone 快捷指令 / Health Auto Export
-      → POST https://garmin-daily-report.caifugao110.workers.dev/webhook/weight → Worker KV → 日报展示
+      → POST https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight
+      → SCF 解析 → 腾讯云 COS（garmin-weight-data-1312201327，公有读私有写）
+      → Worker 日报 fetch 读取 → 报告展示
 ```
 
-### 启用步骤
+### 已完成的配置
 
-```bash
-# 1. 创建 KV namespace，把返回的 id 填入 wrangler.toml 并取消 kv_namespaces 注释
-npx wrangler kv namespace create HEALTH_KV
-
-# 2. 写入鉴权 token（自填随机字符串）
-npx wrangler secret put WEIGHT_WEBHOOK_SECRET
-
-# 3. 重新部署
-npm run deploy
-```
+- SCF 函数 `garmin-wecom-bot` 已部署，含 `/webhook/weight` 路由
+- COS bucket `garmin-weight-data-1312201327`（ap-shanghai）已创建，ACL 公有读私有写
+- SCF 环境变量已配置：`COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_BUCKET` / `COS_REGION`
+- Worker `[vars]` 已配置 `COS_WEIGHT_BASE_URL`
 
 ### 推送端配置（二选一）
 
@@ -271,26 +267,24 @@ npm run deploy
 {"weight": 72.5, "bodyFatRate": 20.1, "bmi": 23.1, "muscleMass": 55.2}
 ```
 
-4. 添加「获取 URL 内容」：URL 填 `https://garmin-daily-report.caifugao110.workers.dev/webhook/weight`，方法 POST，请求体选上一步的 JSON，添加 Header `Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>`
+4. 添加「获取 URL 内容」：URL 填 `https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight`，方法 POST，请求体选上一步的 JSON，Content-Type 设为 application/json
 
 **方式 B：Health Auto Export App（需 Premium）**
 
 1. Automations → + → REST API
-2. URL 填 `https://garmin-daily-report.caifugao110.workers.dev/webhook/weight`，Format 选 JSON
-3. HTTP Headers 添加 `Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>`
-4. Health Metrics 勾选 Body Mass / Body Fat Percentage / Body Mass Index / Lean Body Mass
-5. Schedule 选 Automatic（或每天固定时间）
+2. URL 填 `https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight`，Format 选 JSON
+3. Health Metrics 勾选 Body Mass / Body Fat Percentage / Body Mass Index / Lean Body Mass
+4. Schedule 选 Automatic（或每天固定时间）
 
 两种格式服务端均支持（自动识别）。手动验证：
 
 ```bash
-curl -X POST https://garmin-daily-report.caifugao110.workers.dev/webhook/weight \
-  -H "Authorization: Bearer <WEIGHT_WEBHOOK_SECRET>" \
+curl -X POST https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight \
   -H "Content-Type: application/json" \
   -d '{"weight": 72.5, "bodyFatRate": 20.1}'
 ```
 
-> 说明：日报每天 07:40 生成，会读取昨天 + 今天两条 KV 记录中最新的一次测量，因此晚上称或早上称都会出现在当天日报里；数据经 HTTPS + Bearer token 传输，仅存于你自己的 KV。
+> 说明：日报每天 07:40 生成，会读取昨天 + 今天两条 COS 记录中最新的一次测量，因此晚上称或早上称都会出现在当天日报里。SCF webhook 当前无鉴权（仅暴露体重写入，数据敏感度低）；如需加鉴权可在 SCF 环境变量配置 token 后扩展。
 
 ## 腾讯云函数 SCF 部署（企业微信对话式 AI）
 

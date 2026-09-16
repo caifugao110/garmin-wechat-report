@@ -4,21 +4,19 @@
  * - 由 Cron Triggers 触发（wrangler.toml 中配置 UTC 23:40 = 北京 07:40）
  * - 也可手动 GET /run 触发，便于调试
  * - POST /wecom/callback 接收企业微信自建应用消息回调（对话式 AI 助手）
- * - POST /webhook/weight 接收 iPhone 推送的体重/体脂数据（存 KV，日报展示）
+ * - 体重数据由 SCF /webhook/weight 接收并存入 COS，本 Worker 日报时从 COS 读取展示
  *
  * 依赖 secrets：GARMIN_USERNAME / GARMIN_PASSWORD / SERVERCHAN_SENDKEY
- * 可选 secrets：GARMIN_OAUTH1_TOKEN / WECOM_BOT_KEY / AI_API_KEY / WEIGHT_WEBHOOK_SECRET
+ * 可选 secrets：GARMIN_OAUTH1_TOKEN / WECOM_BOT_KEY / AI_API_KEY
  * 对话式 AI secrets：WECOM_CORP_ID / WECOM_CORP_SECRET / WECOM_AGENT_ID /
  *                    WECOM_TOKEN / WECOM_ENCODING_AES_KEY
- * 非敏感配置（AI_BASE_URL / AI_MODEL）可直接写入 wrangler.toml 的 [vars] 段
+ * 非敏感配置（AI_BASE_URL / AI_MODEL / COS_WEIGHT_BASE_URL）可直接写入 wrangler.toml 的 [vars] 段
  */
 
 import { runPipeline, type PipelineResult } from './pipeline.js';
 import type { AiConfig } from './ai/advice.js';
 import { handleCallback } from './wecom/callback.js';
 import type { WecomChatEnv } from './wecom/types.js';
-import type { HealthKV } from './health/weight.js';
-import { handleWeightWebhook } from './health/webhook.js';
 
 interface Env extends WecomChatEnv {
   GARMIN_USERNAME?: string;
@@ -33,10 +31,11 @@ interface Env extends WecomChatEnv {
   AI_API_KEY?: string;
   AI_BASE_URL?: string;
   AI_MODEL?: string;
-  /** 可选：体重/体脂数据 KV 存储（绑定后启用 webhook 与日报体重展示） */
-  HEALTH_KV?: HealthKV;
-  /** 可选：体重 webhook 鉴权 token */
-  WEIGHT_WEBHOOK_SECRET?: string;
+  /**
+   * 可选：体重数据 COS 公有读根地址（如 https://garmin-weight-data-1312201327.cos.ap-shanghai.myqcloud.com）。
+   * 配置后日报展示「体重与体成分」；数据由 SCF /webhook/weight 写入 COS。
+   */
+  COS_WEIGHT_BASE_URL?: string;
 }
 
 interface ScheduledController {
@@ -74,7 +73,7 @@ async function run(env: Env, date?: string): Promise<PipelineResult> {
     wecomKey: env.WECOM_BOT_KEY,
     ai,
     date,
-    healthKv: env.HEALTH_KV,
+    cosWeightBaseUrl: env.COS_WEIGHT_BASE_URL,
     log: (msg) => console.log(msg),
   });
 }
@@ -92,14 +91,9 @@ export default {
       return handleCallback(request, env, ctx);
     }
 
-    // 体重/体脂数据接收（iPhone 快捷指令 / Health Auto Export 推送）
-    if (url.pathname === '/webhook/weight') {
-      return handleWeightWebhook(request, env);
-    }
-
     if (url.pathname !== '/run') {
       return new Response(
-        'Garmin 日报 Worker 运行中。访问 /run 手动触发（?date=YYYY-MM-DD），/wecom/callback 接收企业微信对话，/webhook/weight 接收体重数据。',
+        'Garmin 日报 Worker 运行中。访问 /run 手动触发（?date=YYYY-MM-DD），/wecom/callback 接收企业微信对话。体重数据请推送到 SCF /webhook/weight。',
         { status: 200 },
       );
     }

@@ -16,6 +16,7 @@
     "test:scf": "tsx scripts/scf-local-test.ts"
   },
   "dependencies": {
+    "cos-nodejs-sdk-v5": "^3.0.0",
     "dotenv": "^16.4.5"
   },
   "devDependencies": {

@@ -18,6 +18,20 @@ import { verifySignature, decryptMessage, buildPassiveReplyXml, buildTextReplyBo
 import { handleUserMessage } from '../wecom/chat.js';
 import { extractCData, shouldProcess } from '../wecom/callback.js';
 import type { WecomChatEnv } from '../wecom/types.js';
+import { parseWeightPayload } from '../health/weight.js';
+import { putWeightToCos } from '../health/cos-writer.js';
+
+/** SCF 环境变量：在 WecomChatEnv 基础上增加体重 webhook 所需 COS 配置 */
+interface ScfEnv extends WecomChatEnv {
+  /** 腾讯云 SecretId（用于 COS 写入签名） */
+  COS_SECRET_ID?: string;
+  /** 腾讯云 SecretKey */
+  COS_SECRET_KEY?: string;
+  /** COS bucket 名（含 APPID 后缀） */
+  COS_BUCKET?: string;
+  /** COS 区域，如 ap-shanghai */
+  COS_REGION?: string;
+}
 
 /** API 网关代理事件 / 函数 URL 事件（字段名两种形态都兼容） */
 export interface ScfEvent {
@@ -70,15 +84,20 @@ function getQuery(event: ScfEvent): Record<string, string> {
  * SCF handler 入口
  */
 export async function main(event: ScfEvent, _ctx?: ScfContext): Promise<ScfResult> {
-  const env = process.env as unknown as WecomChatEnv;
+  const env = process.env as unknown as ScfEnv;
   const method = (event.httpMethod ?? event.method ?? 'GET').toUpperCase();
   const path = event.path ?? event.rawPath ?? '/';
   const query = getQuery(event);
 
   if (path === '/diag') return diagnostics(env);
 
+  // 体重 webhook：国内入口，解析后存入 COS，Worker 日报时从 COS 读取
+  if (path === '/webhook/weight') {
+    return handleWeightWebhook(event, env);
+  }
+
   if (path !== '/wecom/callback') {
-    return textResult(200, 'Garmin WeCom SCF 运行中。回调路径 /wecom/callback，诊断 /diag。');
+    return textResult(200, 'Garmin WeCom SCF 运行中。回调路径 /wecom/callback，体重数据 /webhook/weight，诊断 /diag。');
   }
 
   if (!env.WECOM_CORP_ID || !env.WECOM_CORP_SECRET || !env.WECOM_TOKEN || !env.WECOM_ENCODING_AES_KEY) {
@@ -183,10 +202,73 @@ async function handlePost(event: ScfEvent, env: WecomChatEnv): Promise<ScfResult
 }
 
 /**
+ * 体重 webhook：SCF 作为大陆可直连入口，解析后存入腾讯云 COS，
+ * Worker 日报生成时从 COS 公有读读取展示。
+ *
+ * 这样体重 webhook 的解析逻辑复用 Worker 端 parseWeightPayload，
+ * 存储走 COS（SCF 写 + Worker 读），不依赖 workers.dev 网络。
+ */
+async function handleWeightWebhook(event: ScfEvent, env: ScfEnv): Promise<ScfResult> {
+  const method = (event.httpMethod ?? event.method ?? 'GET').toUpperCase();
+  if (method !== 'POST') {
+    return jsonResult(405, { status: 'error', message: '仅支持 POST 请求' });
+  }
+  if (!env.COS_SECRET_ID || !env.COS_SECRET_KEY || !env.COS_BUCKET || !env.COS_REGION) {
+    return jsonResult(503, { status: 'error', message: '未配置 COS 环境变量' });
+  }
+
+  let bodyText = event.body ?? '';
+  if (event.isBase64Encoded) {
+    bodyText = Buffer.from(bodyText, 'base64').toString('utf-8');
+  }
+
+  let body: unknown;
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    return jsonResult(400, { status: 'error', message: '请求体不是有效 JSON' });
+  }
+
+  let measurement;
+  try {
+    measurement = parseWeightPayload(body, Date.now());
+  } catch (err) {
+    return jsonResult(400, {
+      status: 'error',
+      message: `数据无效：${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  try {
+    await putWeightToCos(
+      {
+        secretId: env.COS_SECRET_ID!,
+        secretKey: env.COS_SECRET_KEY!,
+        bucket: env.COS_BUCKET!,
+        region: env.COS_REGION!,
+      },
+      measurement.date,
+      JSON.stringify(measurement),
+    );
+  } catch (err) {
+    return jsonResult(502, {
+      status: 'error',
+      message: `写入 COS 失败：${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  return jsonResult(200, {
+    status: 'ok',
+    date: measurement.date,
+    weightKg: measurement.weightKg,
+  });
+}
+
+/**
  * 诊断：环境变量配置情况 + 云函数出口到外部依赖的连通性
  * 不输出任何密钥值
  */
-async function diagnostics(env: WecomChatEnv): Promise<ScfResult> {
+async function diagnostics(env: ScfEnv): Promise<ScfResult> {
   const probe = async (url: string, init?: RequestInit): Promise<unknown> => {
     const t0 = Date.now();
     try {

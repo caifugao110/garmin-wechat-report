@@ -13,7 +13,7 @@ import { pushReport as pushFtqq, type PushResult } from './notify/ftqq.js';
 import { pushReport as pushWecom } from './notify/wecom.js';
 import { generateAdvice, type AiConfig } from './ai/advice.js';
 import { daysAgo } from './utils/time.js';
-import { getLatestWeight, getWeight, type HealthKV } from './health/weight.js';
+import { getLatestWeightFromCos, getWeightFromCos } from './health/weight.js';
 import type { ReportData, WeeklyTrend, WeightData } from './report/types.js';
 
 export interface PipelineConfig {
@@ -35,8 +35,8 @@ export interface PipelineConfig {
   date?: string;
   /** 只生成不推送 */
   dryRun?: boolean;
-  /** 体重数据 KV，配置后日报展示体重/体成分 */
-  healthKv?: HealthKV;
+  /** 体重数据 COS 公有读根地址，配置后日报展示体重/体成分 */
+  cosWeightBaseUrl?: string;
   log?: (message: string) => void;
 }
 
@@ -131,13 +131,13 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     trends.push(buildTrend('夜间HRV', health7.hrvLastNightAvg, health.value.hrvLastNightAvg));
   }
 
-  // 可选：读取体重数据（未配置 KV 或无数据则跳过）。
+  // 可选：读取体重数据（未配置 COS 或无数据则跳过）。
   // 日报覆盖"昨日"，但当天早上的称重也应纳入，因此取昨日 + 今天中最新的测量。
   let weight: WeightData | null = null;
-  if (config.healthKv) {
-    const latest = await getLatestWeight(config.healthKv, [date, daysAgo(0)]);
+  if (config.cosWeightBaseUrl) {
+    const latest = await getLatestWeightFromCos(config.cosWeightBaseUrl, [date, daysAgo(0)]);
     if (latest) {
-      const weight7 = await getWeight(config.healthKv, daysAgo(7));
+      const weight7 = await getWeightFromCos(config.cosWeightBaseUrl, daysAgo(7));
       weight = {
         displayDate: latest.date,
         measuredAtLocal: new Intl.DateTimeFormat('en-GB', {

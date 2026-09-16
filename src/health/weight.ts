@@ -2,22 +2,19 @@
  * 体重/体成分数据模块
  *
  * 数据来源：iPhone 将 Apple 健康中的体重数据（华为体脂秤同步而来）通过
- * POST /webhook/weight 推送，存入 KV，供日报生成时读取展示。
+ * POST SCF /webhook/weight 推送，SCF 存入腾讯云 COS，Worker 日报生成时从 COS 读取展示。
  *
- * 兼容两种推送格式：
- * 1. 扁平自定义 JSON（iOS 快捷指令）：
- *    {"weight": 72.5, "bodyFatRate": 20.1, "bmi": 23.1, "muscleMass": 55.2,
- *     "measuredAt": "2026-09-16T07:00:00+08:00"}
- * 2. Health Auto Export REST API JSON：
- *    {"data":{"metrics":[{"name":"body_mass","units":"kg",
- *      "data":[{"date":"2026-09-16 07:00:00 +0800","qty":72.5}]}]}}
+ * 存储：腾讯云 COS，bucket 公有读私有写
+ *   - 对象 key：weight/{YYYY-MM-DD}.json
+ *   - 内容：WeightMeasurement JSON
+ *
+ * Worker 端读取走公有读（直接 fetch），无需签名；
+ * SCF 端写入走 TC3-HMAC-SHA256 签名（见 cos-writer.ts）。
  */
-
-import { formatDate } from '../utils/time.js';
 
 /** 单次体重测量记录 */
 export interface WeightMeasurement {
-  /** 测量时刻对应的本地日期（YYYY-MM-DD，Asia/Shanghai），同时作为 KV key 的一部分 */
+  /** 测量时刻对应的本地日期（YYYY-MM-DD，Asia/Shanghai），同时作为 COS 对象 key 的一部分 */
   date: string;
   /** 测量时刻（epoch 毫秒），用于同一日期内取最新 */
   measuredAtEpochMs: number;
@@ -33,30 +30,16 @@ export interface WeightMeasurement {
   source?: string;
 }
 
-/** 最小 KV 接口（与 Cloudflare KVNamespace 结构兼容，便于 Node 侧类型检查） */
-export interface HealthKV {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-}
-
-/** KV key 前缀 */
-const KEY_PREFIX = 'weight:';
-
-function weightKey(date: string): string {
-  return `${KEY_PREFIX}${date}`;
-}
+/** 体重合理范围（kg），超出视为无效数据 */
+const MIN_WEIGHT_KG = 10;
+const MAX_WEIGHT_KG = 500;
 
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-/** 体重合理范围（kg），超出视为无效数据 */
-const MIN_WEIGHT_KG = 10;
-const MAX_WEIGHT_KG = 500;
-
 /**
  * 解析 "yyyy-MM-dd HH:mm:ss Z"（Health Auto Export 格式）为 epoch 毫秒。
- * 直接 new Date() 对该格式解析结果依赖引擎实现，这里规范化为 ISO 格式后解析。
  */
 function parseHaeDate(s: string): number {
   const m = s
@@ -95,7 +78,6 @@ function parseHaePayload(
     if (!field || !Array.isArray(m.data) || m.data.length === 0) continue;
     sawKnownMetric = true;
 
-    // 取该指标时间最新的一条
     let bestQty: number | null = null;
     let bestMs = -1;
     for (const entry of m.data) {
@@ -116,7 +98,11 @@ function parseHaePayload(
   if (!sawKnownMetric || !isFiniteNumber(fields.weightKg)) return null;
 
   const measuredAtEpochMs = latestMs > 0 ? latestMs : fallbackNowMs;
-  return finalizeMeasurement(fields as Omit<WeightMeasurement, 'date' | 'measuredAtEpochMs'>, measuredAtEpochMs, 'health-auto-export');
+  return finalizeMeasurement(
+    fields as Omit<WeightMeasurement, 'date' | 'measuredAtEpochMs'>,
+    measuredAtEpochMs,
+    'health-auto-export',
+  );
 }
 
 /** 校验并补全日期字段 */
@@ -151,11 +137,9 @@ export function parseWeightPayload(body: unknown, fallbackNowMs: number): Weight
   }
   const obj = body as Record<string, unknown>;
 
-  // Health Auto Export 格式
   const hae = parseHaePayload(obj, fallbackNowMs);
   if (hae) return hae;
 
-  // 扁平自定义格式
   if (!isFiniteNumber(obj.weight)) {
     throw new Error('缺少有效的 weight 字段（kg）');
   }
@@ -176,33 +160,26 @@ export function parseWeightPayload(body: unknown, fallbackNowMs: number): Weight
   );
 }
 
-/**
- * 保存测量记录到 KV（按日 key，仅当新测量时间更新时覆盖）。
- * @returns 是否实际写入
- */
-export async function saveWeightMeasurement(kv: HealthKV, m: WeightMeasurement): Promise<boolean> {
-  const key = weightKey(m.date);
-  try {
-    const existing = await kv.get(key);
-    if (existing) {
-      const prev = JSON.parse(existing) as WeightMeasurement;
-      if (isFiniteNumber(prev?.measuredAtEpochMs) && prev.measuredAtEpochMs >= m.measuredAtEpochMs) {
-        return false;
-      }
-    }
-  } catch {
-    // 已有记录损坏时直接覆盖
-  }
-  await kv.put(key, JSON.stringify(m));
-  return true;
+/** 把 Date 格式化为指定时区的 YYYY-MM-DD 字符串（避免循环依赖 utils/time.ts） */
+function formatDate(date: Date, tz = 'Asia/Shanghai'): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
 }
 
-/** 读取指定日期的测量记录，异常或无数据返回 null */
-export async function getWeight(kv: HealthKV, date: string): Promise<WeightMeasurement | null> {
+/** 读取指定日期的测量记录（Worker 端：COS 公有读，直接 fetch），异常或无数据返回 null */
+export async function getWeightFromCos(
+  cosBaseUrl: string,
+  date: string,
+): Promise<WeightMeasurement | null> {
+  const url = `${cosBaseUrl.replace(/\/$/, '')}/weight/${date}.json`;
   try {
-    const raw = await kv.get(weightKey(date));
-    if (!raw) return null;
-    const m = JSON.parse(raw) as WeightMeasurement;
+    const resp = await fetch(url);
+    if (resp.status === 404 || !resp.ok) return null;
+    const m = (await resp.json()) as WeightMeasurement;
     if (!isFiniteNumber(m?.weightKg)) return null;
     return m;
   } catch {
@@ -211,11 +188,11 @@ export async function getWeight(kv: HealthKV, date: string): Promise<WeightMeasu
 }
 
 /** 在多个日期的记录中取测量时间最新的一条 */
-export async function getLatestWeight(
-  kv: HealthKV,
+export async function getLatestWeightFromCos(
+  cosBaseUrl: string,
   dates: string[],
 ): Promise<WeightMeasurement | null> {
-  const all = (await Promise.all(dates.map((d) => getWeight(kv, d)))).filter(
+  const all = (await Promise.all(dates.map((d) => getWeightFromCos(cosBaseUrl, d)))).filter(
     (m): m is WeightMeasurement => m !== null,
   );
   if (all.length === 0) return null;
