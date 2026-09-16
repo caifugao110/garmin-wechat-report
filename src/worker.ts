@@ -3,16 +3,21 @@
  *
  * - 由 Cron Triggers 触发（wrangler.toml 中配置 UTC 23:40 = 北京 07:40）
  * - 也可手动 GET /run 触发，便于调试
+ * - POST /wecom/callback 接收企业微信自建应用消息回调（对话式 AI 助手）
  *
  * 依赖 secrets：GARMIN_USERNAME / GARMIN_PASSWORD / SERVERCHAN_SENDKEY
  * 可选 secrets：GARMIN_OAUTH1_TOKEN / WECOM_BOT_KEY / AI_API_KEY
+ * 对话式 AI secrets：WECOM_CORP_ID / WECOM_CORP_SECRET / WECOM_AGENT_ID /
+ *                    WECOM_TOKEN / WECOM_ENCODING_AES_KEY
  * 非敏感配置（AI_BASE_URL / AI_MODEL）可直接写入 wrangler.toml 的 [vars] 段
  */
 
 import { runPipeline, type PipelineResult } from './pipeline.js';
 import type { AiConfig } from './ai/advice.js';
+import { handleCallback } from './wecom/callback.js';
+import type { WecomChatEnv } from './wecom/types.js';
 
-interface Env {
+interface Env extends WecomChatEnv {
   GARMIN_USERNAME?: string;
   GARMIN_PASSWORD?: string;
   SERVERCHAN_SENDKEY?: string;
@@ -71,12 +76,19 @@ export default {
     ctx.waitUntil(run(env));
   },
 
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // 企业微信自建应用消息回调（GET 校验 + POST 接收）
+    if (url.pathname === '/wecom/callback') {
+      return handleCallback(request, env, ctx);
+    }
+
     if (url.pathname !== '/run') {
-      return new Response('Garmin 日报 Worker 运行中。访问 /run 手动触发，?date=YYYY-MM-DD 指定日期。', {
-        status: 200,
-      });
+      return new Response(
+        'Garmin 日报 Worker 运行中。访问 /run 手动触发（?date=YYYY-MM-DD），/wecom/callback 接收企业微信对话。',
+        { status: 200 },
+      );
     }
 
     try {

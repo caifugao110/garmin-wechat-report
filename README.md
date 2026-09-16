@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 简体中文
 
-每日自动汇总 Garmin Connect 健康数据，生成 Markdown 日报，并通过 [Server酱](https://sct.ftqq.com) 推送到微信。
+每日自动汇总 Garmin Connect 健康数据，生成 Markdown 日报，并通过 [Server酱](https://sct.ftqq.com) 推送到微信。同时内置**企业微信自建应用对话式 AI 助手**，在企业微信 App 内直接与 AI 对话查询 Garmin 数据。
 
 纯 HTTP 实现 Garmin 认证链（OAuth1 → OAuth2），仅依赖 `fetch` 与 Web Crypto，无浏览器、无第三方 Garmin SDK 依赖。
 
@@ -16,10 +16,13 @@
 - **内置规则引擎**：离线根据阈值自动生成「今日建议」，重要告警优先展示，无需任何外部服务
 - **AI 健康分析（可选，已内置）**：配置 DeepSeek 等任意 OpenAI 兼容服务的 API Key 后，报告末尾自动追加一段个性化大模型建议；AI 接口失败只记日志，不影响正常推送
 - Server酱 / 企业微信群机器人推送到微信；失败时自动推送异常通知
-- 三种运行方式：本地命令行、GitHub Actions 定时任务、Cloudflare Workers Cron
+- **企业微信对话式 AI 助手**（可选）：在企业微信 App 内与自建应用直接对话，AI 会调用 Garmin API 回答步数、睡眠、HRV 等问题，底层用被动回复架构绕开 IP 白名单限制
+- 四种运行方式：本地命令行、GitHub Actions 定时任务、Cloudflare Workers Cron、**腾讯云函数 SCF（企业微信对话）**
 - 报告结构模块化，方便改造内容或更换推送渠道（见下文指南）
 
 ## 工作原理
+
+### 定时日报路径（本地 / Actions / Worker）
 
 ```
 src/index.ts（Node 入口）   ┐
@@ -33,7 +36,22 @@ src/worker.ts（Worker 入口）┘            │
                                          └─ 5. notify/            Server酱 / 企业微信推送
 ```
 
-两个入口共用同一份 `pipeline.ts`，因此无论用哪种部署方式，报告内容和行为完全一致。
+### 企业微信对话路径（腾讯云函数 SCF）
+
+```
+企业微信服务器 POST /wecom/callback
+         │
+         ▼
+src/scf/handler.ts ──→ src/wecom/callback.ts ──→ src/wecom/crypto.ts（验签 + 解密）
+         │
+         ▼
+src/wecom/chat.ts（LLM 主循环，tool_call 调度）
+         │
+         ├── src/garmin/auth.ts + api.ts ── 实时查询 Garmin 数据
+         └── src/wecom/crypto.ts ── 加密被动回复 XML → 直接在 POST 响应体返回
+```
+
+对话路径采用**被动回复架构**：不调企业微信主动消息 API（send，需出口 IP 白名单），而是在 POST 回调响应里直接返回加密的回复 XML。零出站调用，完全绕开 `errcode=60020` IP 白名单限制。详见下文「架构说明：被动回复 vs 主动推送」。
 
 ## 环境要求
 
@@ -47,14 +65,19 @@ src/worker.ts（Worker 入口）┘            │
 | --- | --- | --- |
 | `GARMIN_USERNAME` | 二选一 | Garmin 账号（邮箱） |
 | `GARMIN_PASSWORD` | 二选一 | Garmin 密码 |
-| `GARMIN_OAUTH1_TOKEN` | 二选一 | 长效 OAuth1 token，`npm run token` 生成，CI 推荐 |
+| `GARMIN_OAUTH1_TOKEN` | 二选一 | 长效 OAuth1 token，`npm run token` 生成，CI / 对话路径推荐 |
 | `GARMIN_OAUTH1_TOKEN_SECRET` | 配合 token | OAuth1 token secret |
 | `SERVERCHAN_SENDKEY` | 否 | Server酱 SendKey，不配置则只生成报告不推送 |
 | `WECOM_BOT_KEY` | 否 | 企业微信群机器人 Webhook key，配置后额外推送一份到企业微信群 |
-| `AI_API_KEY` | 否 | 开启 AI 健康分析的 API Key（DeepSeek 等 OpenAI 兼容服务），不配置则跳过 AI 步骤 |
+| `AI_API_KEY` | 否 | 开启 AI 健康分析的 API Key（DeepSeek 等 OpenAI 兼容服务）；企业微信对话也需要 |
 | `AI_BASE_URL` | 否 | OpenAI 兼容接口地址，默认 `https://api.deepseek.com` |
 | `AI_MODEL` | 否 | 模型名，默认 `deepseek-chat` |
 | `DRY_RUN` | 否 | 设为 `1` 时只生成不推送，本地调试用 |
+| `WECOM_CORP_ID` | 对话必需 | 企业 ID，企业微信管理后台「我的企业 → 企业信息」 |
+| `WECOM_CORP_SECRET` | 对话必需 | 自建应用 Secret，应用详情页获取 |
+| `WECOM_AGENT_ID` | 对话必需 | 自建应用 AgentId |
+| `WECOM_TOKEN` | 对话必需 | 接收消息 API 的自定义 Token |
+| `WECOM_ENCODING_AES_KEY` | 对话必需 | 接收消息 API 的 EncodingAESKey（43 字符） |
 
 本地运行时变量从 `.env` 读取；GitHub Actions 从 **Repository secrets** 注入；Cloudflare Workers 从 **Wrangler secrets** 注入。三种方式的变量名完全相同。
 
@@ -210,6 +233,104 @@ npm run deploy
 4. **清理凭据（可选）**：`npx wrangler secret list` 查看，`npx wrangler secret delete <名称>` 删除。
 
 > GitHub Actions 与 Cloudflare Workers 两种部署互不冲突，可只用一种，也可同时部署。若同时启用，请确认两边的定时时间错开，避免同一账号短时间内发起两次登录触发 429。
+
+## 腾讯云函数 SCF 部署（企业微信对话式 AI）
+
+> 为什么选腾讯云函数？Cloudflare 的 `*.workers.dev` 免费域名在中国大陆被网络阻断，企业微信验证服务器（国内）无法连接回调地址；同时 Cloudflare Worker 出口 IP 池不可预测，无法加入企业微信「可信 IP」白名单。腾讯云函数与企业微信同属腾讯生态，国内直连、自带国内 HTTPS 地址，是对话式回调的最佳落地平台。
+
+### 架构说明：被动回复 vs 主动推送
+
+企业微信自建应用回复用户消息有两种方式：
+
+| 方式 | 原理 | 优点 | 缺点 |
+| --- | --- | --- | --- |
+| **主动推送** | POST 回调返回 `success`，再异步调 `POST /cgi-bin/message/send` 发消息 | 不受 5 秒超时限制 | **send API 要求调用方出口 IP 在企业可信 IP 白名单内**（`errcode=60020`）。Cloudflare Workers IP 池太大、腾讯云函数 NAT 池被标记为"第三方服务商 IP"，均无法加白 |
+| **被动回复** | POST 回调内同步处理完对话，直接返回加密的回复 XML | **零出站调用，完全绕开 IP 白名单** | 必须在 5 秒内完成（本项目 LLM+Garmin 热路径 2~5 秒，实测可通过） |
+
+本项目对话路径采用**被动回复**架构。消息加密用 AES-256-CBC + 32 字节块 PKCS7 填充（Web Crypto 自动追加的 16 字节块已手动切掉），签名用 SHA-1，全部在 [src/wecom/crypto.ts](src/wecom/crypto.ts) 实现。
+
+### 第 1 步：创建企业微信自建应用
+
+1. 打开 [企业微信管理后台](https://work.weixin.qq.com) → **应用管理 → 自建 → 创建应用**
+2. 填写应用名称、logo，创建后进入应用详情页
+3. 记下 **AgentId** 和 **Secret**（Secret 只显示一次，丢失需重置）
+4. 在「**我的企业 → 企业信息**」记下 **企业 ID**（CorpID）
+5. 应用详情页下拉找到「**接收消息**」→ 启用 API 接收，自定义 Token 和 EncodingAESKey（43 字符随机串，自己生成或点「随机获取」按钮）。**此时回调 URL 先不填**，等云函数部署好后再填
+
+### 第 2 步：在本机生成 OAuth1 token
+
+```bash
+# .env 已配好 GARMIN_USERNAME / GARMIN_PASSWORD 的话直接跑
+npm run token
+```
+
+把输出的 `GARMIN_OAUTH1_TOKEN` 和 `GARMIN_OAUTH1_TOKEN_SECRET` 记下来（等同账号凭据，不要提交到仓库）。
+
+### 第 3 步：本地构建 + 模拟测试
+
+```bash
+# 构建 CJS 产物（42KB，纯打包无 node_modules 依赖）
+npm run build:scf
+
+# 本地模拟 SCF 事件测试（覆盖 GET 验签、闲聊、Garmin 工具调用、POST 被动回复、/diag 诊断）
+npm run test:scf
+```
+
+所有测试通过后，打包 zip：
+
+```bash
+npm run package:scf
+# 产物：scf-dist/garmin-wecom-scf.zip（~13KB，index.js 在压缩包根目录）
+```
+
+### 第 4 步：腾讯云控制台创建函数
+
+1. 打开 [腾讯云函数控制台](https://console.cloud.tencent.com/scf/list) 微信扫码登录（首次使用需个人实名认证，免费额度足够）
+2. 左侧「函数服务」→ **新建**：
+   - 函数类型：**事件函数**（不要选 Web 函数）
+   - 函数名称：`garmin-wecom-bot`
+   - 地域：**上海** 或广州（任选国内地域）
+   - 运行环境：**Node.js 18.15**（20.x 也可）
+   - 执行方法：`index.main`
+   - 代码上传方式：**本地上传 zip** → 选刚才的 `garmin-wecom-scf.zip`
+   - 高级配置：**执行超时改成 30 秒**（默认 3 秒不够），内存 128MB 即可
+3. 环境变量：点「编辑 JSON」，把 [scf-dist/scf-env.json](file:///d:/mygit/garmin-wechat-report/scf-dist/scf-env.json) 的内容整段粘贴进去（10 个变量，已从你本地 `.env` 提取）
+4. 点**完成**
+
+### 第 5 步：开启公网访问地址
+
+进入函数详情页 → **触发管理** → 找到「**函数 URL**」→ **创建**：
+- 鉴权方式：**免鉴权**
+- 得到 `https://xxxxx.ap-shanghai.tencentscf.com/...` 格式的地址
+
+> 如果控制台只有"API 网关触发器"：新建一个，请求方式 ANY、鉴权免鉴权、发布 release，会得到 `...tencentcs.com/release/...` 地址，同样可用。
+
+### 第 6 步：自检 + 配置回调 URL
+
+1. 浏览器打开 `你的函数URL/diag`，确认 `config` 全是 `true`、`connectivity` 全 ok
+2. 回到企业微信管理后台 → 你的自建应用 → 「接收消息」配置页
+3. 回调 URL 填 `你的函数URL/wecom/callback`（Token / AESKey 保持第 1 步的值不变）
+4. 点**保存**，应立即验证通过
+5. 在企业微信 App 里打开该应用，发「你好」「我昨天走了多少步」验收
+
+### 第 7 步（可选）：更新代码
+
+代码更新后只需重复**构建 → 打包 → 上传 zip** 三步：
+
+```bash
+npm run typecheck
+npm run package:scf
+```
+
+然后到腾讯云函数控制台 → **代码** 页签 → 上传新 zip → 保存。环境变量无需重新填。
+
+### 常见问题
+
+- **回调 URL 保存仍失败**：用 `/diag` 检查云函数是否正常运行；确认 `/wecom/callback` 路径正确；看腾讯云函数日志（控制台 → 日志查询）是否有请求到达
+- **对话有回复但 Garmin 数据是旧的 / 报错**：检查 `GARMIN_OAUTH1_TOKEN` 是否过期，重跑 `npm run token` 更新环境变量
+- **回复内容截断 / 不完整**：被动回复有 4096 字节限制，超长内容会被企业微信截断；可在 `handleUserMessage` 里对 AI 回复做截断
+- **超时重试导致重复回复**：同实例 MsgId 去重已内置（TTL 60 秒）；不同实例间企业微信不会重试 POST 回调（被动回复 5 秒内返回即成功）
+- **workers.dev 大陆不可达**：这是 Cloudflare 免费域名的网络阻断问题，不是代码 bug。定时日报 Worker 正常运行（Server酱推送单向出站），但对话回调必须用腾讯云函数等国内平台
 
 ## 如何修改推送内容
 
@@ -388,8 +509,9 @@ export async function pushBark(deviceKey: string, title: string, content: string
 ```
 .github/workflows/daily-report.yml  GitHub Actions 定时任务
 scripts/bootstrap-token.ts          本机生成 OAuth1 长效 token
+scripts/scf-local-test.ts           SCF 本地模拟事件测试
 src/index.ts                        Node 入口（本地 / Actions）
-src/worker.ts                       Cloudflare Workers 入口（Cron + /run）
+src/worker.ts                       Cloudflare Workers 入口（Cron + /run + /wecom/callback）
 src/pipeline.ts                     核心编排：认证 → 拉数 → 渲染 → 推送
 src/garmin/auth.ts                  SSO 登录 + OAuth1 → OAuth2 认证链
 src/garmin/oauth.ts                 OAuth1 签名工具
@@ -399,6 +521,12 @@ src/report/formatter.ts             Markdown 报告渲染
 src/report/advice.ts                本地规则引擎：生成「今日建议」
 src/report/types.ts                 全部数据类型定义
 src/ai/advice.ts                    可选 AI 健康建议（OpenAI 兼容接口）
+src/wecom/callback.ts               企业微信消息回调（Worker）
+src/wecom/crypto.ts                 企业微信加解密（SHA-1 + AES-256-CBC + 32B 块填充）
+src/wecom/chat.ts                   对话主循环（LLM + tool_call 调度）
+src/wecom/api.ts                    企业微信 send API（仅 Worker 备用，SCF 不依赖）
+src/wecom/types.ts                  WeComChatEnv 类型定义
+src/scf/handler.ts                  腾讯云函数 SCF 入口（事件函数，GET/POST/diag）
 src/notify/ftqq.ts                  Server酱推送
 src/notify/wecom.ts                 企业微信群机器人推送
 src/utils/time.ts                   时区 / 日期 / 时长格式化
@@ -407,11 +535,20 @@ wrangler.toml                       Cloudflare Workers 配置
 
 ### 核心数据流
 
+**定时日报路径**：
+
 1. 入口读取环境变量，组装 `PipelineConfig` 调用 `runPipeline`（[src/pipeline.ts](src/pipeline.ts)）。
 2. `GarminAuth` 完成认证（账号密码走 SSO；有 token 则直连换取会话）。
 3. `GarminApi` 用 `Promise.allSettled` **并发**拉取当日五类数据，单个接口失败不影响其他区块（失败信息进入 `xxxError` 字段，报告中显示「拉取失败」）。
 4. 再拉取 7 天前数据，用 `buildTrend` 计算周度趋势。
 5. `formatReport` 渲染 Markdown，末尾通过规则引擎生成「今日建议」；若配置了 `AI_API_KEY`，再调用 [src/ai/advice.ts](src/ai/advice.ts) 在报告末尾追加「AI 健康建议」区块（AI 失败只记日志、不影响推送），最后通过 `pushReport` 推送到 Server酱 / 企业微信。
+
+**企业微信对话路径**：
+
+1. 企业微信服务器向 `/wecom/callback` 发送 POST（含加密 XML）。
+2. `verifySignature` 验签 → `decryptMessage` 解密拿到明文 XML。
+3. `handleUserMessage` 进入 LLM 主循环：解析用户意图 → 按需调用 Garmin API（步数 / 睡眠 / HRV / 训练数据）→ 返回自然语言回复。
+4. `buildTextReplyBodyXml` 构造回复消息体 XML → `encryptMessage` 加密 → 拼外层 XML（Encrypt + MsgSignature + TimeStamp + Nonce）→ 直接作为 POST 响应体返回。
 
 ### 新增一个数据指标的完整链路
 
@@ -489,6 +626,21 @@ CI 环境改用上文的 OAuth1 token 方案。
 **某些区块显示「拉取失败」或 N/A？**
 单项接口失败不会影响其他数据。可能是当天该类数据尚未同步（早晨太早、手表未同步），
 或 Garmin 调整了接口字段；可先用 `?date=` 补跑历史日期确认，持续失败再检查 [src/garmin/api.ts](src/garmin/api.ts) 的字段解析。
+
+**企业微信回调 URL 保存报「请求不通过」？**
+最常见原因是回调地址的域名在国内不可达。`*.workers.dev` 免费域名在中国大陆被网络阻断，
+企业微信验证服务器（国内）无法连接。必须改用国内可直连的平台：腾讯云函数 SCF（本项目推荐方案，
+与企业微信同生态、自带国内 HTTPS 地址）、阿里云函数计算、或自建服务器。详见上文「腾讯云函数 SCF 部署」。
+
+**企业微信发消息报 errcode=60020「not allow to access from your ip」？**
+这是走主动推送（send API）时出现的 IP 白名单限制。Cloudflare Workers 出口 IP 池不可预测、
+腾讯云函数 NAT 池被标记为"第三方服务商 IP"，均无法加入可信 IP 白名单。
+本项目对话路径已改用**被动回复架构**（在 POST 响应里返回加密 XML），零出站调用，完全绕开此限制。
+如果你在别处仍遇到 60020，要么改走被动回复，要么给 send API 所在的服务器绑定固定公网 IP 并加入白名单。
+
+**腾讯云函数更新代码后没有反应？**
+重新上传 zip 后需点「保存」才会生效。如果仍有问题，到函数控制台的「日志查询」查看最新运行日志，
+或访问 `/diag` 确认云函数本身正常、环境变量齐全。
 
 ## 免责声明
 

@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit",
     "worker:dev": "wrangler dev",
     "worker:dry-run": "wrangler deploy --dry-run --outdir dist",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "build:scf": "esbuild src/scf/handler.ts --bundle --platform=node --target=node18 --format=cjs --outfile=scf-dist/index.js",
+    "package:scf": "npm run build:scf && powershell -NoProfile -Command \"Remove-Item -Force scf-dist/garmin-wecom-scf.zip -ErrorAction SilentlyContinue; Compress-Archive -Path scf-dist/index.js -DestinationPath scf-dist/garmin-wecom-scf.zip\"",
+    "test:scf": "tsx scripts/scf-local-test.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5"
