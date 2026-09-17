@@ -258,17 +258,85 @@ Body-fat scale → Huawei Health (iOS, enable Apple Health sync) → Apple Healt
 
 ### Push-side configuration (choose one)
 
-**Option A: iOS Shortcuts (free)**
+**Option A: iOS Shortcuts (free, recommended)**
 
-1. Shortcuts → Automation → New Personal Automation → "Time of Day" (e.g. 07:20)
-2. Add the "Find Health Samples" action (category: Weight / Body Fat, etc.) to fetch the latest value
-3. Build a JSON payload with the "Dictionary" action, for example:
+#### Prerequisite: verify Apple Health has data
+
+1. Open the Health app → Browse → Body Mass, confirm you see recent measurements
+2. If missing, open the Huawei Health app → Settings → Data permissions → enable "Write to Apple Health". After your next weigh-in, data will sync automatically.
+3. If your iPhone uses imperial units (lb), switch to metric (kg) first via Settings → Health → Units — this avoids manual unit conversion later.
+
+#### Step 1: Create a shortcut
+
+1. Open Shortcuts, tap the **+** top-right to create a new one
+2. Rename it to **"Push Weight to Daily Report"** (name it whatever you like)
+
+#### Step 2: Read Apple Health data
+
+Add the **"Find Health Samples"** action. Add each category below — the action automatically gains one row and one "sample variable" per category:
+
+| Category | Suggested variable | Unit | Required |
+|---|---|---|---|
+| Body Mass | Body Mass | kg | Yes |
+| Body Fat Percentage | Body Fat % | % | Optional |
+| Body Mass Index | BMI | n/a | Optional |
+| Lean Body Mass | Lean Mass | kg | Optional |
+
+For each category, set:
+- **Sample**: Latest
+- **Sort by**: Date
+
+> ⚠️ **Unit conversion**: If your Health data is in lb, add a "Calculate" action to convert: `Body Mass / 2.2046 = Body Mass (kg)`, then reference the converted variable. Body fat % and BMI are unitless — no conversion needed.
+
+#### Step 3: Build the JSON payload
+
+Add a **"Dictionary"** action, type = **JSON**. Fill in the structure below. For values, tap "+" → "Select Variable" and pick the output variables from step 2:
 
 ```json
-{"weight": 72.5, "bodyFatRate": 20.1, "bmi": 23.1, "muscleMass": 55.2}
+{
+  "weight": Body Mass,
+  "bodyFatRate": Body Fat %,
+  "bmi": BMI,
+  "muscleMass": Lean Mass
+}
 ```
 
-4. Add "Get Contents of URL": URL `https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight`, method POST, body = the JSON above, Content-Type: application/json
+> 💡 Variable names are up to you, but the **JSON keys must match exactly** (`weight` / `bodyFatRate` / `bmi` / `muscleMass`). The server accepts both numbers and numeric strings.
+
+#### Step 4: POST to the SCF webhook
+
+Add a **"Get Contents of URL"** action:
+
+| Field | Value |
+|---|---|
+| URL | `https://1312201327-j7lq4qnirc.ap-shanghai.tencentscf.com/webhook/weight` |
+| Method | POST |
+| Body | Output from the previous Dictionary action |
+| Content-Type | `application/json` |
+
+#### Step 5: Test run
+
+Tap the **▶** play button. On success you should see:
+
+```json
+{"status":"ok","date":"2026-09-17","weightKg":70.5}
+```
+
+If it returns `"status":"error"`, check:
+- Does the Health data actually exist? (Open the Health app and verify)
+- Did you mistype a JSON key?
+- Unit issue — if values are ~2.2× too large, pounds weren't converted to kg
+
+#### Step 6: Schedule daily automation
+
+1. In the shortcut editor, tap the ⓘ next to **"In Share Sheet"** → enable **"Used as a Shortcut"**
+2. Or go directly to the **Automation** tab → tap + → Create Personal Automation → trigger = **"Time of Day"** (e.g. 07:20, before the 07:40 report)
+3. Action = "Run Shortcut" → select the shortcut you created
+4. **Do not** enable "Ask Before Running" — you don't want a daily prompt
+
+> iOS background scheduling isn't exact to the second, but the automation always fires before 07:40. If it misses a day (e.g. phone was offline), it usually catches up once you unlock the device.
+
+---
 
 **Option B: Health Auto Export app (Premium required)**
 

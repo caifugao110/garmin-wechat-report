@@ -39,6 +39,19 @@ function isFiniteNumber(v: unknown): v is number {
 }
 
 /**
+ * 把未知值安全转成 number，接受 number 或可解析的数字字符串（iOS 快捷指令常把
+ * JSON 里的数值序列化成字符串，例如 "72.5"）。解析失败返回 null。
+ */
+function toNumber(v: unknown): number | null {
+  if (isFiniteNumber(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+/**
  * 解析 "yyyy-MM-dd HH:mm:ss Z"（Health Auto Export 格式）为 epoch 毫秒。
  */
 function parseHaeDate(s: string): number {
@@ -83,11 +96,12 @@ function parseHaePayload(
     for (const entry of m.data) {
       if (typeof entry !== 'object' || entry === null) continue;
       const e = entry as Record<string, unknown>;
-      if (!isFiniteNumber(e.qty)) continue;
+      const qty = toNumber(e.qty);
+      if (qty === null) continue;
       const ms = typeof e.date === 'string' ? parseHaeDate(e.date) : fallbackNowMs;
       if (ms > bestMs) {
         bestMs = ms;
-        bestQty = e.qty;
+        bestQty = qty;
       }
     }
     if (bestQty === null) continue;
@@ -112,7 +126,11 @@ function finalizeMeasurement(
   source?: string,
 ): WeightMeasurement {
   const { weightKg } = fields;
-  if (!isFiniteNumber(weightKg) || weightKg < MIN_WEIGHT_KG || weightKg > MAX_WEIGHT_KG) {
+  if (
+    !isFiniteNumber(weightKg) ||
+    weightKg < MIN_WEIGHT_KG ||
+    weightKg > MAX_WEIGHT_KG
+  ) {
     throw new Error(`体重必须在 ${MIN_WEIGHT_KG}-${MAX_WEIGHT_KG} kg 之间`);
   }
   const measurement: WeightMeasurement = {
@@ -121,9 +139,9 @@ function finalizeMeasurement(
     weightKg,
     source,
   };
-  if (isFiniteNumber(fields.bodyFatRate)) measurement.bodyFatRate = fields.bodyFatRate;
-  if (isFiniteNumber(fields.bmi)) measurement.bmi = fields.bmi;
-  if (isFiniteNumber(fields.muscleMassKg)) measurement.muscleMassKg = fields.muscleMassKg;
+  if (toNumber(fields.bodyFatRate) !== null) measurement.bodyFatRate = toNumber(fields.bodyFatRate)!;
+  if (toNumber(fields.bmi) !== null) measurement.bmi = toNumber(fields.bmi)!;
+  if (toNumber(fields.muscleMassKg) !== null) measurement.muscleMassKg = toNumber(fields.muscleMassKg)!;
   return measurement;
 }
 
@@ -140,7 +158,8 @@ export function parseWeightPayload(body: unknown, fallbackNowMs: number): Weight
   const hae = parseHaePayload(obj, fallbackNowMs);
   if (hae) return hae;
 
-  if (!isFiniteNumber(obj.weight)) {
+  const weightVal = toNumber(obj.weight);
+  if (weightVal === null) {
     throw new Error('缺少有效的 weight 字段（kg）');
   }
   const measuredAtEpochMs =
@@ -148,10 +167,10 @@ export function parseWeightPayload(body: unknown, fallbackNowMs: number): Weight
       ? new Date(obj.measuredAt).getTime()
       : fallbackNowMs;
   const fields: Partial<WeightMeasurement> = {
-    weightKg: obj.weight,
-    bodyFatRate: isFiniteNumber(obj.bodyFatRate) ? obj.bodyFatRate : undefined,
-    bmi: isFiniteNumber(obj.bmi) ? obj.bmi : undefined,
-    muscleMassKg: isFiniteNumber(obj.muscleMass) ? obj.muscleMass : undefined,
+    weightKg: weightVal,
+    bodyFatRate: toNumber(obj.bodyFatRate) ?? undefined,
+    bmi: toNumber(obj.bmi) ?? undefined,
+    muscleMassKg: toNumber(obj.muscleMass) ?? undefined,
   };
   return finalizeMeasurement(
     fields as Omit<WeightMeasurement, 'date' | 'measuredAtEpochMs'>,
