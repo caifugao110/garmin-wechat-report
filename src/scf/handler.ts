@@ -282,12 +282,18 @@ async function diagnostics(env: ScfEnv): Promise<ScfResult> {
     }
   };
 
-  const [s3, garmin, deepseek, egressIp] = await Promise.all([
+  const [s3, garmin, deepseek, cos, egressIp] = await Promise.all([
     probe('https://thegarth.s3.amazonaws.com/oauth_consumer.json'),
     probe('https://connectapi.garmin.com/'),
     probe(`${env.AI_BASE_URL ?? 'https://api.deepseek.com'}/models`, {
       headers: env.AI_API_KEY ? { Authorization: `Bearer ${env.AI_API_KEY}` } : undefined,
     }),
+    // COS 连通性：GET 一个不存在的对象，预期 404（NoSuchKey）即说明网络通 + bucket 存在
+    env.COS_BUCKET && env.COS_REGION
+      ? probe(
+          `https://${env.COS_BUCKET}.cos.${env.COS_REGION}.myqcloud.com/weight/_diag_probe.json`,
+        )
+      : Promise.resolve({ ok: false, error: '未配置 COS_BUCKET / COS_REGION' }),
     getEgressIp(),
   ]);
 
@@ -304,11 +310,17 @@ async function diagnostics(env: ScfEnv): Promise<ScfResult> {
       AI_API_KEY: !!env.AI_API_KEY,
       GARMIN_OAUTH1_TOKEN: !!env.GARMIN_OAUTH1_TOKEN,
       GARMIN_OAUTH1_TOKEN_SECRET: !!env.GARMIN_OAUTH1_TOKEN_SECRET,
+      COS_SECRET_ID: !!env.COS_SECRET_ID,
+      COS_SECRET_KEY: !!env.COS_SECRET_KEY,
+      COS_BUCKET: !!env.COS_BUCKET,
+      COS_REGION: !!env.COS_REGION,
     },
     connectivity: {
       garmin_oauth_consumer_s3: s3,
       garmin_connectapi: garmin,
       ai_provider_models: deepseek,
+      // status 404 是正常的（探测对象不存在）；403/网络错误才是异常
+      cos_weight_bucket: cos,
     },
   });
 }
