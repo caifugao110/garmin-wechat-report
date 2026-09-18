@@ -100,5 +100,8 @@ jobs:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
+          # 可选：体重数据 COS 公有读根地址（与 Cloudflare Worker 一致，数据由 SCF /webhook/weight 写入 COS）
+          # 配置后日报展示「体重与体成分」；bucket 公有读私有写，非敏感配置可明文写入
+          COS_WEIGHT_BASE_URL: ${{ secrets.COS_WEIGHT_BASE_URL }}
           TZ: Asia/Shanghai
         run: npx tsx src/index.ts

@@ -49,6 +49,8 @@ async function main(): Promise<void> {
     wecomKey,
     ai,
     dryRun: process.env.DRY_RUN === '1',
+    // 可选：体重数据 COS 公有读根地址（与 Cloudflare Worker 一致，数据由 SCF /webhook/weight 写入 COS）
+    cosWeightBaseUrl: process.env.COS_WEIGHT_BASE_URL,
     log: (msg) => console.log(msg),
   });
 
